@@ -7,7 +7,9 @@ from typing import Self
 
 
 _HACK_SYMBOL_RE = re.compile(r"^[A-Za-z_.$:][A-Za-z0-9_.$:]*$")
-_MAX_CONSTANT = 32767
+_MAX_INDEX = 32767
+_TEMP_BASE = 5
+_MAX_TEMP_INDEX = 7
 
 _BINARY_ARITHMETIC_OPS: dict[str, str] = {
     "add": "M=D+M",
@@ -27,12 +29,24 @@ _COMPARISON_JUMPS: dict[str, str] = {
     "lt": "JLT",
 }
 
+_INDIRECT_SEGMENTS: dict[str, str] = {
+    "local": "LCL",
+    "argument": "ARG",
+    "this": "THIS",
+    "that": "THAT",
+}
+
+_POINTER_SEGMENTS: dict[int, str] = {
+    0: "THIS",
+    1: "THAT",
+}
+
 _VALID_ARITHMETIC_COMMANDS = frozenset(
     _BINARY_ARITHMETIC_OPS | _UNARY_ARITHMETIC_OPS | _COMPARISON_JUMPS
 )
 
 _VALID_SEGMENTS = frozenset(
-    {"constant", "local", "argument", "this", "that", "temp", "pointer", "static"}
+    {"constant", "temp", "pointer", "static"} | _INDIRECT_SEGMENTS.keys()
 )
 
 
@@ -79,6 +93,19 @@ class CodeWriter:
                 f"Índice inválido para {context}: esperado inteiro não negativo, "
                 f"recebido {value!r}."
             )
+
+    def _validate_15bit_index(self, index: int, context: str) -> None:
+        if index > _MAX_INDEX:
+            raise CodeWriterError(
+                f"Índice fora do limite de 15 bits (0..{_MAX_INDEX}) para {context}: {index}."
+            )
+
+    def _require_file_name(self) -> str:
+        if self._file_name is None:
+            raise CodeWriterError(
+                "Nome do arquivo .vm não definido: chame setFileName() antes de acessar 'static'."
+            )
+        return self._file_name
 
     def _next_label_id(self) -> int:
         label_id = self._label_counter
@@ -188,10 +215,7 @@ class CodeWriter:
         self._validate_non_negative_int(index, f"push {segment}")
 
         if segment == "constant":
-            if index > _MAX_CONSTANT:
-                raise CodeWriterError(
-                    f"Valor fora do limite de 15 bits para constant (0..{_MAX_CONSTANT}): {index}."
-                )
+            self._validate_15bit_index(index, "push constant")
             self._write_lines(
                 [
                     f"// push constant {index}",
@@ -202,8 +226,63 @@ class CodeWriter:
             )
             return
 
-        raise NotImplementedError(
-            f"Operação 'push {segment}' ainda não implementada."
+        if segment in _INDIRECT_SEGMENTS:
+            self._validate_15bit_index(index, f"push {segment}")
+            base_symbol = _INDIRECT_SEGMENTS[segment]
+            self._write_lines(
+                [
+                    f"// push {segment} {index}",
+                    f"@{base_symbol}",
+                    "D=M",
+                    f"@{index}",
+                    "A=D+A",
+                    "D=M",
+                    *self._push_d(),
+                ]
+            )
+            return
+
+        if segment == "temp":
+            if index > _MAX_TEMP_INDEX:
+                raise CodeWriterError(
+                    f"Índice fora do intervalo permitido para temp (0..{_MAX_TEMP_INDEX}): {index}."
+                )
+            self._write_lines(
+                [
+                    f"// push temp {index}",
+                    f"@{_TEMP_BASE + index}",
+                    "D=M",
+                    *self._push_d(),
+                ]
+            )
+            return
+
+        if segment == "pointer":
+            pointer_symbol = _POINTER_SEGMENTS.get(index)
+            if pointer_symbol is None:
+                raise CodeWriterError(
+                    f"Índice fora do intervalo permitido para pointer (0 ou 1): {index}."
+                )
+            self._write_lines(
+                [
+                    f"// push pointer {index}",
+                    f"@{pointer_symbol}",
+                    "D=M",
+                    *self._push_d(),
+                ]
+            )
+            return
+
+        # segment == "static"
+        self._validate_15bit_index(index, "push static")
+        file_name = self._require_file_name()
+        self._write_lines(
+            [
+                f"// push static {index}",
+                f"@{file_name}.{index}",
+                "D=M",
+                *self._push_d(),
+            ]
         )
 
     def writePop(self, segment: str, index: int) -> None:
@@ -218,8 +297,67 @@ class CodeWriter:
                 "Operação inválida: não existe 'pop' para o segmento 'constant'."
             )
 
-        raise NotImplementedError(
-            f"Operação 'pop {segment}' ainda não implementada."
+        if segment in _INDIRECT_SEGMENTS:
+            self._validate_15bit_index(index, f"pop {segment}")
+            base_symbol = _INDIRECT_SEGMENTS[segment]
+            self._write_lines(
+                [
+                    f"// pop {segment} {index}",
+                    f"@{base_symbol}",
+                    "D=M",
+                    f"@{index}",
+                    "D=D+A",
+                    "@R13",
+                    "M=D",
+                    *self._pop_to_d(),
+                    "@R13",
+                    "A=M",
+                    "M=D",
+                ]
+            )
+            return
+
+        if segment == "temp":
+            if index > _MAX_TEMP_INDEX:
+                raise CodeWriterError(
+                    f"Índice fora do intervalo permitido para temp (0..{_MAX_TEMP_INDEX}): {index}."
+                )
+            self._write_lines(
+                [
+                    f"// pop temp {index}",
+                    *self._pop_to_d(),
+                    f"@{_TEMP_BASE + index}",
+                    "M=D",
+                ]
+            )
+            return
+
+        if segment == "pointer":
+            pointer_symbol = _POINTER_SEGMENTS.get(index)
+            if pointer_symbol is None:
+                raise CodeWriterError(
+                    f"Índice fora do intervalo permitido para pointer (0 ou 1): {index}."
+                )
+            self._write_lines(
+                [
+                    f"// pop pointer {index}",
+                    *self._pop_to_d(),
+                    f"@{pointer_symbol}",
+                    "M=D",
+                ]
+            )
+            return
+
+        # segment == "static"
+        self._validate_15bit_index(index, "pop static")
+        file_name = self._require_file_name()
+        self._write_lines(
+            [
+                f"// pop static {index}",
+                *self._pop_to_d(),
+                f"@{file_name}.{index}",
+                "M=D",
+            ]
         )
 
     def close(self) -> None:
