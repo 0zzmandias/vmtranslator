@@ -62,6 +62,8 @@ def translate_file(vm_path: Path, code_writer: CodeWriter) -> None:
             code_writer.writeIf(vm_parser.arg1())
         elif command_type == CommandType.C_FUNCTION:
             code_writer.writeFunction(vm_parser.arg1(), vm_parser.arg2())
+        elif command_type == CommandType.C_CALL:
+            code_writer.writeCall(vm_parser.arg1(), vm_parser.arg2())
         elif command_type == CommandType.C_RETURN:
             code_writer.writeReturn()
         else:

@@ -12,6 +12,7 @@ _DEFAULT_FUNCTION_SCOPE = "GLOBAL"
 _MAX_INDEX = 32767
 _TEMP_BASE = 5
 _MAX_TEMP_INDEX = 7
+_CALL_FRAME_SIZE = 5
 
 _BINARY_ARITHMETIC_OPS: dict[str, str] = {
     "add": "M=D+M",
@@ -160,6 +161,20 @@ class CodeWriter:
             )
         self._file_name = name
         self._current_function = _DEFAULT_FUNCTION_SCOPE
+
+    def writeInit(self) -> None:
+        """Emite o código de bootstrap: SP = 256 seguido de call Sys.init 0."""
+        self._ensure_open()
+        self._write_lines(
+            [
+                "// bootstrap",
+                "@256",
+                "D=A",
+                "@SP",
+                "M=D",
+            ]
+        )
+        self.writeCall("Sys.init", 0)
 
     def writeArithmetic(self, cmd: str) -> None:
         """Traduz um comando aritmético ou lógico para Assembly Hack."""
@@ -434,6 +449,48 @@ class CodeWriter:
                     "M=M+1",
                 ]
             )
+        self._write_lines(lines)
+
+    def writeCall(self, function_name: str, num_args: int) -> None:
+        """Traduz a chamada de função salvando o frame do chamador e saltando para function_name."""
+        self._ensure_open()
+        self._validate_identifier(function_name, "call")
+        self._validate_non_negative_int(num_args, "call")
+        arg_offset = _CALL_FRAME_SIZE + num_args
+        self._validate_15bit_index(arg_offset, "call")
+
+        return_label = f"{self._current_function}$ret.{self._next_label_id()}"
+        lines = [
+            f"// call {function_name} {num_args}",
+            f"@{return_label}",
+            "D=A",
+            *self._push_d(),
+        ]
+        for segment_symbol in ("LCL", "ARG", "THIS", "THAT"):
+            lines.extend(
+                [
+                    f"@{segment_symbol}",
+                    "D=M",
+                    *self._push_d(),
+                ]
+            )
+        lines.extend(
+            [
+                "@SP",
+                "D=M",
+                f"@{arg_offset}",
+                "D=D-A",
+                "@ARG",
+                "M=D",
+                "@SP",
+                "D=M",
+                "@LCL",
+                "M=D",
+                f"@{function_name}",
+                "0;JMP",
+                f"({return_label})",
+            ]
+        )
         self._write_lines(lines)
 
     def writeReturn(self) -> None:
