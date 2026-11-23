@@ -2,8 +2,12 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from parser.command_type import CommandType
+
+
+_VM_IDENTIFIER_RE = re.compile(r"^[A-Za-z_.:][A-Za-z0-9_.:]*$")
 
 
 class ParserError(Exception):
@@ -50,6 +54,7 @@ class _CommandSpec:
     arg1_is_self: bool = False
     has_arg1: bool = True
     has_arg2: bool = False
+    validate_identifier: bool = False
 
 
 _ARITHMETIC_SPEC = _CommandSpec(
@@ -83,6 +88,53 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         arg1_is_self=False,
         has_arg1=True,
         has_arg2=True,
+    ),
+    "label": _CommandSpec(
+        command_type=CommandType.C_LABEL,
+        expected_tokens=2,
+        arg1_is_self=False,
+        has_arg1=True,
+        has_arg2=False,
+        validate_identifier=True,
+    ),
+    "goto": _CommandSpec(
+        command_type=CommandType.C_GOTO,
+        expected_tokens=2,
+        arg1_is_self=False,
+        has_arg1=True,
+        has_arg2=False,
+        validate_identifier=True,
+    ),
+    "if-goto": _CommandSpec(
+        command_type=CommandType.C_IF,
+        expected_tokens=2,
+        arg1_is_self=False,
+        has_arg1=True,
+        has_arg2=False,
+        validate_identifier=True,
+    ),
+    "function": _CommandSpec(
+        command_type=CommandType.C_FUNCTION,
+        expected_tokens=3,
+        arg1_is_self=False,
+        has_arg1=True,
+        has_arg2=True,
+        validate_identifier=True,
+    ),
+    "call": _CommandSpec(
+        command_type=CommandType.C_CALL,
+        expected_tokens=3,
+        arg1_is_self=False,
+        has_arg1=True,
+        has_arg2=True,
+        validate_identifier=True,
+    ),
+    "return": _CommandSpec(
+        command_type=CommandType.C_RETURN,
+        expected_tokens=1,
+        arg1_is_self=False,
+        has_arg1=False,
+        has_arg2=False,
     ),
 }
 
@@ -161,6 +213,9 @@ class Parser:
         else:
             arg1 = None
 
+        if spec.validate_identifier and arg1 is not None:
+            self._validate_identifier(arg1, keyword, line_number)
+
         arg2: int | None = None
         if spec.has_arg2:
             arg2 = self._parse_non_negative_int(tokens[2], keyword, line_number)
@@ -172,6 +227,20 @@ class Parser:
             line_number=line_number,
             raw_text=" ".join(tokens),
         )
+
+    def _validate_identifier(
+        self,
+        token: str,
+        keyword: str,
+        line_number: int,
+    ) -> None:
+        if not _VM_IDENTIFIER_RE.fullmatch(token):
+            raise ParserError(
+                f"Identificador inválido '{token}' para o comando '{keyword}'. "
+                "Use apenas letras, dígitos, '_', '.' ou ':', sem iniciar com dígito.",
+                filename=self._filepath,
+                line_number=line_number,
+            )
 
     def _parse_non_negative_int(
         self,
