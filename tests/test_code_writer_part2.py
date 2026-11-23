@@ -24,15 +24,15 @@ def test_program_flow_uses_default_global_scope_without_function(
 
     assert _read_lines(asm_file) == [
         "// label LOOP",
-        "(GLOBAL$LOOP)",
+        "(GLOBAL$BasicLoop$LOOP)",
         "// goto LOOP",
-        "@GLOBAL$LOOP",
+        "@GLOBAL$BasicLoop$LOOP",
         "0;JMP",
         "// if-goto LOOP",
         "@SP",
         "AM=M-1",
         "D=M",
-        "@GLOBAL$LOOP",
+        "@GLOBAL$BasicLoop$LOOP",
         "D;JNE",
     ]
 
@@ -59,7 +59,34 @@ def test_labels_are_isolated_by_function_scope_and_reset_on_new_file(
     assert "@ClassA.first$LOOP" in lines
     assert "(ClassA.second$LOOP)" in lines
     assert "@ClassA.second$LOOP" in lines
-    assert "(GLOBAL$LOOP)" in lines
+    assert "(GLOBAL$ClassB$LOOP)" in lines
+
+
+def test_global_labels_are_isolated_across_files_and_before_set_file_name(
+    tmp_path: Path,
+) -> None:
+    asm_file = tmp_path / "GlobalLevels.asm"
+    with CodeWriter(asm_file) as cw:
+        cw.writeLabel("START")
+        cw.writeGoto("START")
+
+        cw.setFileName("FileA")
+        cw.writeLabel("LOOP")
+        cw.writeGoto("LOOP")
+        cw.writeIf("LOOP")
+
+        cw.setFileName("FileB")
+        cw.writeLabel("LOOP")
+        cw.writeGoto("LOOP")
+        cw.writeIf("LOOP")
+
+    lines = _read_lines(asm_file)
+    assert "(GLOBAL$START)" in lines
+    assert "@GLOBAL$START" in lines
+    assert "(GLOBAL$FileA$LOOP)" in lines
+    assert lines.count("@GLOBAL$FileA$LOOP") == 2
+    assert "(GLOBAL$FileB$LOOP)" in lines
+    assert lines.count("@GLOBAL$FileB$LOOP") == 2
 
 
 def test_write_function_zero_locals_emits_only_entry_label(tmp_path: Path) -> None:

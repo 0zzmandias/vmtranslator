@@ -133,6 +133,47 @@ def test_directory_with_sys_vm_emits_bootstrap_and_isolates_statics_and_labels(
     assert len(declared_labels) == len(set(declared_labels))
 
 
+def test_directory_isolates_global_labels_across_files_without_functions(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "GlobalFlowProj"
+    proj_dir.mkdir()
+    (proj_dir / "FileA.vm").write_text(
+        "label LOOP\n"
+        "push constant 0\n"
+        "if-goto LOOP\n"
+        "goto LOOP\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "FileB.vm").write_text(
+        "label LOOP\n"
+        "push constant 1\n"
+        "if-goto LOOP\n"
+        "goto LOOP\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+
+    lines = (proj_dir / "GlobalFlowProj.asm").read_text(encoding="utf-8").splitlines()
+    assert "(GLOBAL$FileA$LOOP)" in lines
+    assert lines.count("@GLOBAL$FileA$LOOP") == 2
+    assert "(GLOBAL$FileB$LOOP)" in lines
+    assert lines.count("@GLOBAL$FileB$LOOP") == 2
+
+    declared_labels = [
+        match.group(1)
+        for line in lines
+        if (match := re.fullmatch(r"\(([^)]+)\)", line))
+    ]
+    assert len(declared_labels) == len(set(declared_labels))
+
+
 def test_directory_without_vm_files_returns_error_and_creates_no_asm(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
