@@ -12,8 +12,8 @@ class CLIError(Exception):
     """Erro de invocação ou resolução de entrada/saída na linha de comando."""
 
 
-def resolve_io(input_arg: str) -> tuple[Path, Path]:
-    """Valida a entrada (arquivo .vm) e determina o caminho .asm de saída."""
+def resolve_io(input_arg: str) -> tuple[list[Path], Path, bool]:
+    """Valida a entrada (arquivo .vm ou diretório) e resolve arquivos, saída .asm e bootstrap."""
     if not input_arg or not input_arg.strip():
         raise CLIError("Caminho de entrada não informado.")
 
@@ -22,10 +22,38 @@ def resolve_io(input_arg: str) -> tuple[Path, Path]:
         raise CLIError(f"Arquivo de entrada não encontrado: '{input_path}'.")
 
     if input_path.is_dir():
-        raise CLIError(
-            f"O caminho '{input_path}' é um diretório. "
-            "Suporte a diretórios ainda não habilitado nesta etapa."
-        )
+        dir_name = input_path.resolve().name
+        if not dir_name:
+            raise CLIError(
+                f"Não foi possível determinar o nome do arquivo '.asm' para o diretório '{input_path}'."
+            )
+
+        try:
+            vm_files = sorted(
+                (
+                    entry
+                    for entry in input_path.iterdir()
+                    if entry.is_file() and entry.suffix == ".vm"
+                ),
+                key=lambda path: path.name,
+            )
+        except PermissionError as exc:
+            raise CLIError(
+                f"Sem permissão de leitura para o diretório '{input_path}'."
+            ) from exc
+        except OSError as exc:
+            raise CLIError(
+                f"Falha ao listar o diretório '{input_path}': {exc}"
+            ) from exc
+
+        if not vm_files:
+            raise CLIError(
+                f"Nenhum arquivo '.vm' encontrado no diretório '{input_path}'."
+            )
+
+        output_path = input_path / f"{dir_name}.asm"
+        should_bootstrap = any(vm_file.name == "Sys.vm" for vm_file in vm_files)
+        return vm_files, output_path, should_bootstrap
 
     if not input_path.is_file():
         raise CLIError(f"O caminho '{input_path}' não é um arquivo regular.")
@@ -36,7 +64,7 @@ def resolve_io(input_arg: str) -> tuple[Path, Path]:
         )
 
     output_path = input_path.with_suffix(".asm")
-    return input_path, output_path
+    return [input_path], output_path, False
 
 
 def translate_file(vm_path: Path, code_writer: CodeWriter) -> None:
@@ -71,13 +99,16 @@ def translate_file(vm_path: Path, code_writer: CodeWriter) -> None:
 
 
 def translate(input_arg: str) -> Path:
-    """Executa o fluxo completo de tradução para um arquivo .vm e retorna o .asm gerado."""
-    input_path, output_path = resolve_io(input_arg)
+    """Executa o fluxo completo de tradução (arquivo ou diretório) e retorna o .asm gerado."""
+    vm_files, output_path, should_bootstrap = resolve_io(input_arg)
     writer: CodeWriter | None = None
 
     try:
         writer = CodeWriter(output_path)
-        translate_file(input_path, writer)
+        if should_bootstrap:
+            writer.writeInit()
+        for vm_file in vm_files:
+            translate_file(vm_file, writer)
     except Exception:
         if writer is not None:
             writer.close()
@@ -94,7 +125,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
     if len(args) != 1:
-        print("Uso: vmtranslator <caminho/Arquivo.vm>", file=sys.stderr)
+        print(
+            "Uso: vmtranslator <caminho/Arquivo.vm | caminho/Diretorio>",
+            file=sys.stderr,
+        )
         return 1
 
     try:
