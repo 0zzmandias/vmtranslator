@@ -412,6 +412,79 @@ class CodeWriter:
             ]
         )
 
+    def writeFunction(self, function_name: str, num_vars: int) -> None:
+        """Traduz a declaração de função, atualizando o escopo e zerando num_vars locais."""
+        self._ensure_open()
+        self._validate_identifier(function_name, "function")
+        self._validate_non_negative_int(num_vars, "function")
+        self._validate_15bit_index(num_vars, "function")
+
+        self._current_function = function_name
+        lines = [
+            f"// function {function_name} {num_vars}",
+            f"({function_name})",
+        ]
+        for _ in range(num_vars):
+            lines.extend(
+                [
+                    "@SP",
+                    "A=M",
+                    "M=0",
+                    "@SP",
+                    "M=M+1",
+                ]
+            )
+        self._write_lines(lines)
+
+    def writeReturn(self) -> None:
+        """Traduz o retorno de função restaurando o frame do chamador."""
+        self._ensure_open()
+        self._write_lines(
+            [
+                "// return",
+                "@LCL",
+                "D=M",
+                "@R13",
+                "M=D",
+                "@5",
+                "A=D-A",
+                "D=M",
+                "@R14",
+                "M=D",
+                *self._pop_to_d(),
+                "@ARG",
+                "A=M",
+                "M=D",
+                "@ARG",
+                "D=M+1",
+                "@SP",
+                "M=D",
+                "@R13",
+                "AM=M-1",
+                "D=M",
+                "@THAT",
+                "M=D",
+                "@R13",
+                "AM=M-1",
+                "D=M",
+                "@THIS",
+                "M=D",
+                "@R13",
+                "AM=M-1",
+                "D=M",
+                "@ARG",
+                "M=D",
+                "@R13",
+                "AM=M-1",
+                "D=M",
+                "@LCL",
+                "M=D",
+                "@R14",
+                "A=M",
+                "0;JMP",
+            ]
+        )
+
     def close(self) -> None:
         """Fecha o arquivo .asm de saída."""
         if not self._closed:
