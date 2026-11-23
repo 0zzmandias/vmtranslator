@@ -9,9 +9,28 @@ from typing import Self
 _HACK_SYMBOL_RE = re.compile(r"^[A-Za-z_.$:][A-Za-z0-9_.$:]*$")
 _MAX_CONSTANT = 32767
 
+_BINARY_ARITHMETIC_OPS: dict[str, str] = {
+    "add": "M=D+M",
+    "sub": "M=M-D",
+    "and": "M=D&M",
+    "or": "M=D|M",
+}
+
+_UNARY_ARITHMETIC_OPS: dict[str, str] = {
+    "neg": "M=-M",
+    "not": "M=!M",
+}
+
+_COMPARISON_JUMPS: dict[str, str] = {
+    "eq": "JEQ",
+    "gt": "JGT",
+    "lt": "JLT",
+}
+
 _VALID_ARITHMETIC_COMMANDS = frozenset(
-    {"add", "sub", "neg", "eq", "gt", "lt", "and", "or", "not"}
+    _BINARY_ARITHMETIC_OPS | _UNARY_ARITHMETIC_OPS | _COMPARISON_JUMPS
 )
+
 _VALID_SEGMENTS = frozenset(
     {"constant", "local", "argument", "this", "that", "temp", "pointer", "static"}
 )
@@ -61,6 +80,11 @@ class CodeWriter:
                 f"recebido {value!r}."
             )
 
+    def _next_label_id(self) -> int:
+        label_id = self._label_counter
+        self._label_counter += 1
+        return label_id
+
     def _write_lines(self, lines: list[str]) -> None:
         self._ensure_open()
         try:
@@ -103,21 +127,57 @@ class CodeWriter:
         if cmd not in _VALID_ARITHMETIC_COMMANDS:
             raise CodeWriterError(f"Comando aritmético/lógico inválido: '{cmd}'.")
 
-        if cmd == "add":
+        if cmd in _BINARY_ARITHMETIC_OPS:
+            operation = _BINARY_ARITHMETIC_OPS[cmd]
             self._write_lines(
                 [
-                    "// add",
+                    f"// {cmd}",
                     "@SP",
                     "AM=M-1",
                     "D=M",
                     "A=A-1",
-                    "M=D+M",
+                    operation,
                 ]
             )
             return
 
-        raise NotImplementedError(
-            f"Comando aritmético/lógico '{cmd}' ainda não implementado."
+        if cmd in _UNARY_ARITHMETIC_OPS:
+            operation = _UNARY_ARITHMETIC_OPS[cmd]
+            self._write_lines(
+                [
+                    f"// {cmd}",
+                    "@SP",
+                    "A=M-1",
+                    operation,
+                ]
+            )
+            return
+
+        jump = _COMPARISON_JUMPS[cmd]
+        label_id = self._next_label_id()
+        true_label = f"VM_{cmd.upper()}_TRUE_{label_id}"
+        end_label = f"VM_{cmd.upper()}_END_{label_id}"
+        self._write_lines(
+            [
+                f"// {cmd}",
+                "@SP",
+                "AM=M-1",
+                "D=M",
+                "A=A-1",
+                "D=M-D",
+                f"@{true_label}",
+                f"D;{jump}",
+                "@SP",
+                "A=M-1",
+                "M=0",
+                f"@{end_label}",
+                "0;JMP",
+                f"({true_label})",
+                "@SP",
+                "A=M-1",
+                "M=-1",
+                f"({end_label})",
+            ]
         )
 
     def writePush(self, segment: str, index: int) -> None:
