@@ -6,8 +6,8 @@ from types import TracebackType
 from typing import Self
 
 
-_HACK_SYMBOL_RE = re.compile(r"^[A-Za-z_.$:][A-Za-z0-9_.$:]*$")
-_VM_IDENTIFIER_RE = re.compile(r"^[A-Za-z_.:][A-Za-z0-9_.:]*$")
+_HACK_SYMBOL_RE = re.compile(r"[A-Za-z_.$:][A-Za-z0-9_.$:]*")
+_VM_IDENTIFIER_RE = re.compile(r"[A-Za-z_.:][A-Za-z0-9_.:]*")
 _DEFAULT_FUNCTION_SCOPE = "GLOBAL"
 _MAX_INDEX = 32767
 _TEMP_BASE = 5
@@ -155,7 +155,7 @@ class CodeWriter:
     def setFileName(self, name: str) -> None:
         """Define o nome do arquivo .vm corrente (sem extensão) para símbolos static."""
         self._ensure_open()
-        if not isinstance(name, str) or not name or not _HACK_SYMBOL_RE.match(name):
+        if not isinstance(name, str) or not name or not _HACK_SYMBOL_RE.fullmatch(name):
             raise CodeWriterError(
                 f"Nome de arquivo inválido para símbolos Assembly Hack: {name!r}."
             )

@@ -7,7 +7,7 @@ import re
 from parser.command_type import CommandType
 
 
-_VM_IDENTIFIER_RE = re.compile(r"^[A-Za-z_.:][A-Za-z0-9_.:]*$")
+_VM_IDENTIFIER_RE = re.compile(r"[A-Za-z_.:][A-Za-z0-9_.:]*")
 
 
 class ParserError(Exception):

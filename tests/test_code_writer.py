@@ -308,7 +308,20 @@ def test_static_without_set_file_name_raises_error(tmp_path: Path) -> None:
             cw.writePop("static", 0)
 
 
-@pytest.mark.parametrize("bad_name", ["", "1Invalid", "has space", "bad-name", "a/b"])
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "",
+        "1Invalid",
+        "has space",
+        "bad-name",
+        "a/b",
+        "Foo\n",
+        "Foo\r",
+        "Foo bar",
+        "Foo/Bar",
+    ],
+)
 def test_invalid_file_name_raises_error(tmp_path: Path, bad_name: str) -> None:
     asm_file = tmp_path / "BadName.asm"
     with CodeWriter(asm_file) as cw:
