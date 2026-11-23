@@ -13,7 +13,7 @@ class CLIError(Exception):
 
 
 def resolve_io(input_arg: str) -> tuple[Path, Path]:
-    """Valida a entrada da Parte 1 (arquivo .vm) e determina o caminho .asm de saída."""
+    """Valida a entrada (arquivo .vm) e determina o caminho .asm de saída."""
     if not input_arg or not input_arg.strip():
         raise CLIError("Caminho de entrada não informado.")
 
@@ -24,7 +24,7 @@ def resolve_io(input_arg: str) -> tuple[Path, Path]:
     if input_path.is_dir():
         raise CLIError(
             f"O caminho '{input_path}' é um diretório. "
-            "Na Parte 1, informe um único arquivo com extensão .vm."
+            "Suporte a diretórios ainda não habilitado nesta etapa."
         )
 
     if not input_path.is_file():
@@ -54,6 +54,12 @@ def translate_file(vm_path: Path, code_writer: CodeWriter) -> None:
             code_writer.writePush(vm_parser.arg1(), vm_parser.arg2())
         elif command_type == CommandType.C_POP:
             code_writer.writePop(vm_parser.arg1(), vm_parser.arg2())
+        elif command_type == CommandType.C_LABEL:
+            code_writer.writeLabel(vm_parser.arg1())
+        elif command_type == CommandType.C_GOTO:
+            code_writer.writeGoto(vm_parser.arg1())
+        elif command_type == CommandType.C_IF:
+            code_writer.writeIf(vm_parser.arg1())
         else:
             raise CLIError(f"Tipo de comando não suportado: '{command_type.value}'.")
 

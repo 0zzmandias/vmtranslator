@@ -7,6 +7,8 @@ from typing import Self
 
 
 _HACK_SYMBOL_RE = re.compile(r"^[A-Za-z_.$:][A-Za-z0-9_.$:]*$")
+_VM_IDENTIFIER_RE = re.compile(r"^[A-Za-z_.:][A-Za-z0-9_.:]*$")
+_DEFAULT_FUNCTION_SCOPE = "GLOBAL"
 _MAX_INDEX = 32767
 _TEMP_BASE = 5
 _MAX_TEMP_INDEX = 7
@@ -60,6 +62,7 @@ class CodeWriter:
     def __init__(self, output_path: str | Path) -> None:
         self._output_path = Path(output_path)
         self._file_name: str | None = None
+        self._current_function: str = _DEFAULT_FUNCTION_SCOPE
         self._label_counter: int = 0
         self._closed: bool = False
 
@@ -99,6 +102,15 @@ class CodeWriter:
             raise CodeWriterError(
                 f"Índice fora do limite de 15 bits (0..{_MAX_INDEX}) para {context}: {index}."
             )
+
+    def _validate_identifier(self, name: str, context: str) -> None:
+        if not isinstance(name, str) or not _VM_IDENTIFIER_RE.fullmatch(name):
+            raise CodeWriterError(
+                f"Identificador inválido para {context}: {name!r}."
+            )
+
+    def _scoped_label(self, label: str) -> str:
+        return f"{self._current_function}${label}"
 
     def _require_file_name(self) -> str:
         if self._file_name is None:
@@ -147,6 +159,7 @@ class CodeWriter:
                 f"Nome de arquivo inválido para símbolos Assembly Hack: {name!r}."
             )
         self._file_name = name
+        self._current_function = _DEFAULT_FUNCTION_SCOPE
 
     def writeArithmetic(self, cmd: str) -> None:
         """Traduz um comando aritmético ou lógico para Assembly Hack."""
@@ -357,6 +370,45 @@ class CodeWriter:
                 *self._pop_to_d(),
                 f"@{file_name}.{index}",
                 "M=D",
+            ]
+        )
+
+    def writeLabel(self, label: str) -> None:
+        """Traduz o comando label com qualificação pelo escopo da função corrente."""
+        self._ensure_open()
+        self._validate_identifier(label, "label")
+        scoped = self._scoped_label(label)
+        self._write_lines(
+            [
+                f"// label {label}",
+                f"({scoped})",
+            ]
+        )
+
+    def writeGoto(self, label: str) -> None:
+        """Traduz o comando goto (salto incondicional)."""
+        self._ensure_open()
+        self._validate_identifier(label, "goto")
+        scoped = self._scoped_label(label)
+        self._write_lines(
+            [
+                f"// goto {label}",
+                f"@{scoped}",
+                "0;JMP",
+            ]
+        )
+
+    def writeIf(self, label: str) -> None:
+        """Traduz o comando if-goto (salta se o valor desempilhado for diferente de 0)."""
+        self._ensure_open()
+        self._validate_identifier(label, "if-goto")
+        scoped = self._scoped_label(label)
+        self._write_lines(
+            [
+                f"// if-goto {label}",
+                *self._pop_to_d(),
+                f"@{scoped}",
+                "D;JNE",
             ]
         )
 
