@@ -1,6 +1,6 @@
 # VMTranslator — Tradutor VM → Assembly Hack
 
-Tradutor da linguagem intermediária da Máquina Virtual (VM) para Assembly Hack, desenvolvido na disciplina de **Compiladores** (especificação *Nand2Tetris* — Parte 1: *Project 07*).
+Tradutor completo da linguagem intermediária da Máquina Virtual (VM) para Assembly Hack, desenvolvido na disciplina de **Compiladores** (especificação *Nand2Tetris* — *Projects 07 e 08*).
 
 ## Integrante
 
@@ -14,7 +14,7 @@ Tradutor da linguagem intermediária da Máquina Virtual (VM) para Assembly Hack
 * **Gerenciamento de dependências e empacotamento:** `pyproject.toml` e `requirements.txt`
 * **Framework de testes:** `pytest`
 
-**Justificativa da escolha:** Python permite uma separação limpa entre os módulos `parser/`, `codewriter/` e `main/`, oferece *type hints* modernos e manipulação direta de texto e arquivos, além de viabilizar uma suíte automatizada robusta com `pytest`.
+**Justificativa da escolha:** Python permite uma separação limpa entre os módulos `parser/`, `codewriter/` e `main/`, oferece *type hints* modernos e manipulação direta de texto e arquivos, além de viabilizar uma suíte automatizada robusta com `pytest` e extensão aditiva da Parte 1 para a Parte 2 sem reescrita.
 
 ## Pré-requisitos
 
@@ -22,7 +22,7 @@ Para instalar, executar e validar o projeto são necessários:
 
 * **Python 3.10 ou superior** (desenvolvido e validado em **Python 3.13.9**) com suporte a `venv` e `pip`;
 * **`pytest` (>= 8.0.0)** — instalado automaticamente via `requirements.txt` para a suíte de testes unitários e de integração;
-* **Java (JDK/JRE — testado com OpenJDK 21)** e a suíte **Nand2Tetris** (`tools/CPUEmulator.sh` e arquivos de teste de `projects/07`) — necessários para executar a validação oficial dos scripts `.tst` no CPU Emulator.
+* **Java (JDK/JRE — testado com OpenJDK 21)** e a suíte **Nand2Tetris** (`tools/CPUEmulator.sh` e arquivos de teste de `projects/07` e `projects/08`) — necessários para executar a validação oficial dos scripts `.tst` no CPU Emulator.
 
 ## Organização do Repositório
 
@@ -34,19 +34,22 @@ vmtranslator/
 ├── requirements.txt
 ├── parser/
 │   ├── __init__.py
-│   ├── command_type.py      # Enum CommandType (C_ARITHMETIC, C_PUSH, C_POP)
-│   └── parser.py            # Parser léxico/sintático e ParserError
+│   ├── command_type.py             # Enum CommandType (Partes 1 e 2)
+│   └── parser.py                   # Parser léxico/sintático e ParserError
 ├── codewriter/
 │   ├── __init__.py
-│   └── code_writer.py       # Gerador de Assembly Hack e CodeWriterError
+│   └── code_writer.py              # Gerador de Assembly Hack e CodeWriterError
 ├── main/
 │   ├── __init__.py
-│   └── cli.py               # Interface CLI e orquestração
+│   └── cli.py                      # Interface CLI, suporte a diretórios e orquestração
 └── tests/
     ├── __init__.py
-    ├── test_parser.py       # Testes unitários do Parser (Parte 1)
-    ├── test_code_writer.py  # Testes unitários do CodeWriter (Parte 1)
-    └── test_cli.py          # Testes de integração e CLI (Parte 1)
+    ├── test_parser.py              # Testes unitários do Parser (Parte 1)
+    ├── test_code_writer.py         # Testes unitários do CodeWriter (Parte 1)
+    ├── test_cli.py                 # Testes de integração e CLI (Parte 1)
+    ├── test_parser_part2.py        # Testes unitários do Parser (Parte 2)
+    ├── test_code_writer_part2.py   # Testes unitários do CodeWriter (Parte 2)
+    └── test_cli_part2.py           # Testes de integração e CLI (Parte 2)
 ```
 
 ## Build e Execução
@@ -62,13 +65,21 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### 2. Execução do tradutor (arquivo `.vm`)
+### 2. Execução do tradutor
 
+O tradutor aceita um arquivo `.vm` individual ou um diretório contendo um ou mais arquivos `.vm`:
+
+* **Arquivo único:**
 ```bash
 vmtranslator caminho/Arquivo.vm
 ```
+Gera `caminho/Arquivo.asm` na mesma pasta de entrada, **sem** emissão de código de *bootstrap*.
 
-O arquivo traduzido é gerado na mesma pasta do arquivo de entrada como `caminho/Arquivo.asm`.
+* **Diretório (múltiplos arquivos `.vm`):**
+```bash
+vmtranslator caminho/Diretorio
+```
+Localiza todos os arquivos `.vm` no nível do diretório em ordem alfabética determinística e gera um único `caminho/Diretorio/Diretorio.asm`. O código de *bootstrap* (`SP = 256` seguido de `call Sys.init 0`) é emitido **apenas** quando o diretório contém `Sys.vm`.
 
 ### 3. Execução da suíte de testes automatizados
 
@@ -93,26 +104,46 @@ pytest -v
   * `local`, `argument`, `this` e `that` (com uso de `R13` como registrador auxiliar no `pop` indireto);
   * `temp` (`RAM[5 + i]`, índices `0..7`);
   * `pointer` (`0` para `THIS` e `1` para `THAT`);
-  * `static` (`@NomeArquivo.i`, atualizado via `setFileName()`).
-* **Rastreabilidade, CLI e tratamento de erros (`main/`):** emissão do comando VM original como comentário antes de cada bloco Assembly gerado, ausência de inicialização de ponteiros de segmento (`SP`, `LCL`, `ARG`, `THIS`, `THAT`), validação rigorosa de argumentos/entradas com mensagens em `stderr`, código de saída não-zero e remoção automática de `.asm` parcial em caso de falha.
+  * `static` (`@NomeArquivo.i`, atualizado por arquivo via `setFileName()`).
+* **Rastreabilidade e tratamento de erros (`main/`):** emissão do comando VM original como comentário antes de cada bloco Assembly gerado, ausência de inicialização de ponteiros de segmento em arquivos individuais, validação rigorosa de argumentos/entradas com mensagens em `stderr`, código de saída não-zero e remoção automática de `.asm` parcial em caso de falha.
+
+### Parte 2 — Controle de Fluxo, Funções, Bootstrap e Diretórios (Project 08)
+
+* **Extensão do `Parser` (`parser/`):** suporte aditivo aos 6 novos comandos (`C_LABEL`, `C_GOTO`, `C_IF`, `C_FUNCTION`, `C_CALL` e `C_RETURN`), com validação de aridade, identificadores VM e índices inteiros não negativos.
+* **Controle de fluxo (`codewriter/`):** tradução de `label`, `goto` e `if-goto` (`D;JNE`) com qualificação automática pelo escopo da função corrente (`função$rótulo`, ou prefixo fixo `GLOBAL` quando não há `function`). * **Protocolo de funções (`codewriter/`):** * `writeFunction(nome, nVars)`: atualiza a função corrente, declara `(f)` e aloca/zera `nVars` variáveis locais; * `writeCall(nome, nArgs)`: gera rótulo de retorno exclusivo (`chamador$ret.i`) via contador monotônico global, salva `retAddr`, `LCL`, `ARG`, `THIS` e `THAT`, reposiciona `ARG = SP - 5 - nArgs` e `LCL = SP`, salta para `f` e declara `(retAddr)`;
+  * `writeReturn()`: salva `endFrame = LCL` (`R13`) e lê `retAddr = *(endFrame - 5)` (`R14`) **antes** de gravar o valor de retorno em `*ARG` (protegendo funções com 0 argumentos), ajusta `SP = ARG + 1`, restaura `THAT`, `THIS`, `ARG` e `LCL` e salta para `retAddr`.
+* **Bootstrap e diretórios (`codewriter/` e `main/`):** implementação de `writeInit()` (`SP = 256` seguido de `call Sys.init 0`, resultando em `SP = 261`, `LCL = 261` e `ARG = 256`), suporte à tradução de diretórios em ordem determinística com atualização de `setFileName()` por arquivo `.vm` (isolamento de `static`) e emissão condicional de *bootstrap* somente quando o diretório contém `Sys.vm`.
 
 ## Resultado dos Testes
 
-### Testes Oficiais — Parte 1 (CPU Emulator / Project 07)
+### Testes Oficiais — CPU Emulator (11/11)
 
-| Teste | Entrada | O que exercita | Resultado |
-| :--- | :--- | :--- | :---: |
-| `StackArithmetic/SimpleAdd` | `SimpleAdd.vm` | `push constant` e `add` | Passou |
-| `StackArithmetic/StackTest` | `StackTest.vm` | Todos os comandos aritméticos, lógicos e comparações | Passou |
-| `MemoryAccess/BasicTest` | `BasicTest.vm` | `push`/`pop` em `constant`, `local`, `argument`, `this`, `that` e `temp` | Passou |
-| `MemoryAccess/PointerTest` | `PointerTest.vm` | `pointer`, `this` e `that` | Passou |
-| `MemoryAccess/StaticTest` | `StaticTest.vm` | `static` (`@Arquivo.i`) | Passou |
+| Parte | Teste | Entrada | Bootstrap | O que exercita | Resultado |
+| :---: | :--- | :--- | :---: | :--- | :---: |
+| Parte 1 | `StackArithmetic/SimpleAdd` | `SimpleAdd.vm` | Não | `push constant` e `add` | Passou |
+| Parte 1 | `StackArithmetic/StackTest` | `StackTest.vm` | Não | Todos os comandos aritméticos, lógicos e comparações | Passou |
+| Parte 1 | `MemoryAccess/BasicTest` | `BasicTest.vm` | Não | `push`/`pop` em `constant`, `local`, `argument`, `this`, `that` e `temp` | Passou |
+| Parte 1 | `MemoryAccess/PointerTest` | `PointerTest.vm` | Não | `pointer`, `this` e `that` | Passou |
+| Parte 1 | `MemoryAccess/StaticTest` | `StaticTest.vm` | Não | `static` (`@Arquivo.i`) | Passou |
+| Parte 2 | `ProgramFlow/BasicLoop` | `BasicLoop.vm` | Não | `label` e `if-goto` (soma `1 + 2 + ... + n`) | Passou |
+| Parte 2 | `ProgramFlow/FibonacciSeries` | `FibonacciSeries.vm` | Não | `goto`, `if-goto` e gravação de sequência na memória | Passou |
+| Parte 2 | `FunctionCalls/SimpleFunction` | `SimpleFunction.vm` | Não | `function` e `return` com variáveis locais | Passou |
+| Parte 2 | `FunctionCalls/NestedCall` | Diretório (`Sys.vm`) | Sim | Chamadas aninhadas, `local` zerado e preservação do frame | Passou |
+| Parte 2 | `FunctionCalls/FibonacciElement` | Diretório (`Main.vm`, `Sys.vm`) | Sim | Recursão, múltiplos arquivos e bootstrap | Passou |
+| Parte 2 | `FunctionCalls/StaticsTest` | Diretório (`Class1.vm`, `Class2.vm`, `Sys.vm`) | Sim | Isolamento de `static` entre múltiplos arquivos e bootstrap | Passou |
 
 ### Testes Unitários e de Integração (`pytest`)
 
 | Suíte | Escopo | Resultado |
 | :--- | :--- | :---: |
-| `tests/test_parser.py` | Comandos, formatação, valores-limite e `ParserError` | Passou |
-| `tests/test_code_writer.py` | Aritmética, comparações, segmentos, invariantes e `CodeWriterError` | Passou |
-| `tests/test_cli.py` | Tradução ponta a ponta, argumentos inválidos e limpeza de `.asm` parcial | Passou |
-| **Total** | **94 testes automatizados** | **94/94 Passou** |
+| `tests/test_parser.py` | Comandos, formatação, valores-limite e `ParserError` (Parte 1) | Passou |
+| `tests/test_code_writer.py` | Aritmética, comparações, segmentos, invariantes e `CodeWriterError` (Parte 1) | Passou |
+| `tests/test_cli.py` | Tradução de arquivo único, erros de entrada e limpeza de `.asm` parcial (Parte 1) | Passou |
+| `tests/test_parser_part2.py` | Novos comandos de fluxo/funções, aridade, identificadores e `ParserError` (Parte 2) | Passou |
+| `tests/test_code_writer_part2.py` | Escopos, `function`, `call`, `return`, `writeInit`, unicidade de rótulos e erros (Parte 2) | Passou |
+| `tests/test_cli_part2.py` | Diretórios, ordenação determinística, isolamento de `static` e bootstrap condicional (Parte 2) | Passou |
+| **Total** | **161 testes automatizados (94 Parte 1 + 67 Parte 2)** | **161/161 Passou** |
+
+## Vídeo de Demonstração
+
+* *A ser adicionado — o link do vídeo será inserido nesta seção após a gravação.*
