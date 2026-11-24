@@ -290,22 +290,96 @@ class CodeWriter:
 
         jump = _COMPARISON_JUMPS[cmd]
         cmd_upper = cmd.upper()
-        true_label, end_label = self._allocate_internal_labels(
+
+        if cmd == "eq":
+            true_label, end_label = self._allocate_internal_labels(
+                lambda label_id: (
+                    f"VM_{cmd_upper}_TRUE_{label_id}",
+                    f"VM_{cmd_upper}_END_{label_id}",
+                )
+            )
+            self._write_lines(
+                [
+                    f"// {cmd}",
+                    "@SP",
+                    "AM=M-1",
+                    "D=M",
+                    "A=A-1",
+                    "D=M-D",
+                    f"@{true_label}",
+                    f"D;{jump}",
+                    "@SP",
+                    "A=M-1",
+                    "M=0",
+                    f"@{end_label}",
+                    "0;JMP",
+                    f"({true_label})",
+                    "@SP",
+                    "A=M-1",
+                    "M=-1",
+                    f"({end_label})",
+                ]
+            )
+            return
+
+        # gt e lt: verifica sinais de x e y antes de subtrair para evitar overflow em 16 bits
+        (
+            x_neg_label,
+            same_sign_label,
+            false_label,
+            true_label,
+            end_label,
+        ) = self._allocate_internal_labels(
             lambda label_id: (
+                f"VM_{cmd_upper}_XNEG_{label_id}",
+                f"VM_{cmd_upper}_SAME_{label_id}",
+                f"VM_{cmd_upper}_FALSE_{label_id}",
                 f"VM_{cmd_upper}_TRUE_{label_id}",
                 f"VM_{cmd_upper}_END_{label_id}",
             )
         )
+        if cmd == "gt":
+            x_nonneg_y_neg_target = true_label
+            x_neg_y_nonneg_target = false_label
+        else:
+            x_nonneg_y_neg_target = false_label
+            x_neg_y_nonneg_target = true_label
+
         self._write_lines(
             [
                 f"// {cmd}",
                 "@SP",
                 "AM=M-1",
                 "D=M",
-                "A=A-1",
+                "@R13",
+                "M=D",
+                "@SP",
+                "A=M-1",
+                "D=M",
+                f"@{x_neg_label}",
+                "D;JLT",
+                "@R13",
+                "D=M",
+                f"@{same_sign_label}",
+                "D;JGE",
+                f"@{x_nonneg_y_neg_target}",
+                "0;JMP",
+                f"({x_neg_label})",
+                "@R13",
+                "D=M",
+                f"@{same_sign_label}",
+                "D;JLT",
+                f"@{x_neg_y_nonneg_target}",
+                "0;JMP",
+                f"({same_sign_label})",
+                "@R13",
+                "D=M",
+                "@SP",
+                "A=M-1",
                 "D=M-D",
                 f"@{true_label}",
                 f"D;{jump}",
+                f"({false_label})",
                 "@SP",
                 "A=M-1",
                 "M=0",

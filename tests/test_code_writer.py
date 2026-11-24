@@ -12,6 +12,143 @@ def _read_lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
 
 
+def _to_int16(value: int) -> int:
+    value &= 0xFFFF
+    return value - 0x10000 if value & 0x8000 else value
+
+
+def _push_int16_via_vm(cw: CodeWriter, value: int) -> None:
+    """Empilha qualquer inteiro com sinal de 16 bits usando apenas comandos VM válidos."""
+    assert -32768 <= value <= 32767
+    if value >= 0:
+        cw.writePush("constant", value)
+        return
+    if value == -32768:
+        cw.writePush("constant", 32767)
+        cw.writeArithmetic("neg")
+        cw.writePush("constant", 1)
+        cw.writeArithmetic("sub")
+        return
+    cw.writePush("constant", -value)
+    cw.writeArithmetic("neg")
+
+
+def _execute_hack_asm(lines: list[str], initial_sp: int = 256) -> dict[int, int]:
+    """Monta e executa instruções Assembly Hack em complemento de dois de 16 bits."""
+    symbols: dict[str, int] = {
+        "SP": 0,
+        "LCL": 1,
+        "ARG": 2,
+        "THIS": 3,
+        "THAT": 4,
+        "SCREEN": 16384,
+        "KBD": 24576,
+        **{f"R{index}": index for index in range(16)},
+    }
+    rom: list[str] = []
+    for raw_line in lines:
+        clean = raw_line.split("//", 1)[0].strip()
+        if not clean:
+            continue
+        if clean.startswith("(") and clean.endswith(")"):
+            label = clean[1:-1]
+            assert label not in symbols, f"Rótulo duplicado no Assembly: {label}"
+            symbols[label] = len(rom)
+        else:
+            rom.append(clean)
+
+    next_var_addr = 16
+    ram: dict[int, int] = {0: initial_sp}
+    reg_a = 0
+    reg_d = 0
+    pc = 0
+    steps = 0
+
+    while 0 <= pc < len(rom):
+        steps += 1
+        assert steps <= 10_000, "Limite de ciclos excedido na simulação Hack."
+        instr = rom[pc]
+
+        if instr.startswith("@"):
+            token = instr[1:]
+            if token.isdigit():
+                reg_a = int(token)
+            else:
+                if token not in symbols:
+                    symbols[token] = next_var_addr
+                    next_var_addr += 1
+                reg_a = symbols[token]
+            pc += 1
+            continue
+
+        dest = ""
+        jump = ""
+        body = instr
+        if "=" in body:
+            dest, body = body.split("=", 1)
+        if ";" in body:
+            comp, jump = body.split(";", 1)
+        else:
+            comp = body
+
+        mem_val = ram.get(reg_a, 0)
+        alu_ops: dict[str, int] = {
+            "0": 0,
+            "1": 1,
+            "-1": -1,
+            "D": reg_d,
+            "A": reg_a,
+            "M": mem_val,
+            "!D": _to_int16(~reg_d),
+            "!A": _to_int16(~reg_a),
+            "!M": _to_int16(~mem_val),
+            "-D": _to_int16(-reg_d),
+            "-A": _to_int16(-reg_a),
+            "-M": _to_int16(-mem_val),
+            "D+1": _to_int16(reg_d + 1),
+            "A+1": _to_int16(reg_a + 1),
+            "M+1": _to_int16(mem_val + 1),
+            "D-1": _to_int16(reg_d - 1),
+            "A-1": _to_int16(reg_a - 1),
+            "M-1": _to_int16(mem_val - 1),
+            "D+A": _to_int16(reg_d + reg_a),
+            "D+M": _to_int16(reg_d + mem_val),
+            "D-A": _to_int16(reg_d - reg_a),
+            "D-M": _to_int16(reg_d - mem_val),
+            "A-D": _to_int16(reg_a - reg_d),
+            "M-D": _to_int16(mem_val - reg_d),
+            "D&A": _to_int16(reg_d & reg_a),
+            "D&M": _to_int16(reg_d & mem_val),
+            "D|A": _to_int16(reg_d | reg_a),
+            "D|M": _to_int16(reg_d | mem_val),
+        }
+        assert comp in alu_ops, f"Expressão ALU Hack inválida: {comp!r}"
+        result = alu_ops[comp]
+
+        old_a = reg_a
+        if "M" in dest:
+            ram[old_a] = result
+        if "D" in dest:
+            reg_d = result
+        if "A" in dest:
+            reg_a = result
+
+        jump_conditions: dict[str, bool] = {
+            "": False,
+            "JGT": result > 0,
+            "JEQ": result == 0,
+            "JGE": result >= 0,
+            "JLT": result < 0,
+            "JNE": result != 0,
+            "JLE": result <= 0,
+            "JMP": True,
+        }
+        assert jump in jump_conditions, f"Condição de salto Hack inválida: {jump!r}"
+        pc = old_a if jump_conditions[jump] else pc + 1
+
+    return ram
+
+
 def test_arithmetic_binary_commands_and_sub_operand_order(tmp_path: Path) -> None:
     asm_file = tmp_path / "Binary.asm"
     with CodeWriter(asm_file) as cw:
@@ -86,8 +223,8 @@ def test_comparison_commands_generate_unique_labels_and_boolean_values(
         for line in lines
         if (match := re.fullmatch(r"\(([^)]+)\)", line))
     ]
-    assert len(declared_labels) == 8
-    assert len(set(declared_labels)) == 8
+    assert len(declared_labels) == 14
+    assert len(set(declared_labels)) == 14
 
     assert "D;JEQ" in lines
     assert "D;JGT" in lines
@@ -97,22 +234,56 @@ def test_comparison_commands_generate_unique_labels_and_boolean_values(
     assert "M=0" in lines
 
 
+_INT16_BOUNDARY_VALUES = (-32768, -1, 0, 1, 32767)
+
+
+@pytest.mark.parametrize("cmd", ["eq", "gt", "lt"])
+@pytest.mark.parametrize("x", _INT16_BOUNDARY_VALUES)
+@pytest.mark.parametrize("y", _INT16_BOUNDARY_VALUES)
+def test_comparisons_execute_correctly_across_16bit_boundaries_without_overflow(
+    tmp_path: Path,
+    cmd: str,
+    x: int,
+    y: int,
+) -> None:
+    asm_file = tmp_path / f"Cmp_{cmd}_{x}_{y}.asm"
+    with CodeWriter(asm_file) as cw:
+        _push_int16_via_vm(cw, x)
+        _push_int16_via_vm(cw, y)
+        cw.writeArithmetic(cmd)
+
+    ram = _execute_hack_asm(_read_lines(asm_file), initial_sp=256)
+
+    if cmd == "eq":
+        expected = -1 if x == y else 0
+    elif cmd == "gt":
+        expected = -1 if x > y else 0
+    else:
+        expected = -1 if x < y else 0
+
+    assert ram[0] == 257
+    assert ram[256] == expected
+
+
 def test_comparison_labels_skip_reserved_symbols_atomically(tmp_path: Path) -> None:
     asm_file = tmp_path / "ReservedComparisons.asm"
-    reserved = {"VM_EQ_END_0", "VM_GT_TRUE_2"}
+    reserved = {"VM_EQ_END_0", "VM_GT_SAME_2", "VM_LT_XNEG_4"}
     with CodeWriter(asm_file, reserved_symbols=reserved) as cw:
         cw.writeArithmetic("eq")
         cw.writeArithmetic("gt")
+        cw.writeArithmetic("lt")
 
     lines = _read_lines(asm_file)
     assert "(VM_EQ_TRUE_0)" not in lines
     assert "(VM_EQ_END_0)" not in lines
     assert "(VM_EQ_TRUE_1)" in lines
     assert "(VM_EQ_END_1)" in lines
-    assert "(VM_GT_TRUE_2)" not in lines
-    assert "(VM_GT_END_2)" not in lines
-    assert "(VM_GT_TRUE_3)" in lines
-    assert "(VM_GT_END_3)" in lines
+
+    for suffix in ("XNEG", "SAME", "FALSE", "TRUE", "END"):
+        assert f"(VM_GT_{suffix}_2)" not in lines
+        assert f"(VM_GT_{suffix}_3)" in lines
+        assert f"(VM_LT_{suffix}_4)" not in lines
+        assert f"(VM_LT_{suffix}_5)" in lines
 
 
 def test_predefined_hack_symbols_table_is_complete() -> None:
