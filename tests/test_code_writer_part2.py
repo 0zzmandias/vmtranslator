@@ -6,6 +6,7 @@ import re
 import pytest
 
 from codewriter import CodeWriter, CodeWriterError
+from tests.hack_simulator import _execute_hack_asm
 
 
 def _read_lines(path: Path) -> list[str]:
@@ -474,3 +475,123 @@ def test_write_return_rejects_missing_function_without_emitting_code(
         cw.writeReturn()
 
     assert asm_file.read_bytes() == reference_file.read_bytes()
+
+
+@pytest.mark.parametrize("num_vars", [0, 3])
+def test_function_initializes_locals_on_nonzero_ram(
+    tmp_path: Path,
+    num_vars: int,
+) -> None:
+    asm_file = tmp_path / "LocalsBehavior.asm"
+    with CodeWriter(asm_file) as cw:
+        cw.writeFunction("Main.run", num_vars)
+        cw.writeLabel("READY")
+        cw.writePush("constant", 99)
+
+    initial = {0: 300, 1: 300, 300: 11, 301: -7, 302: 19, 303: 23}
+    ram = _execute_hack_asm(
+        _read_lines(asm_file), initial_ram=initial, stop_label="Main.run$READY",
+    )
+    assert ram[0] == 300 + num_vars
+    assert ram[1] == 300
+    for address in range(300, 304):
+        assert ram[address] == (0 if address < 300 + num_vars else initial[address])
+
+
+def test_call_without_arguments_returns_and_restores_caller_frame(tmp_path: Path) -> None:
+    asm_file = tmp_path / "ZeroArgsBehavior.asm"
+    with CodeWriter(asm_file) as cw:
+        cw.setFileName("Caller")
+        cw.writeCall("Worker.run", 0)
+        cw.writePush("constant", 77)
+        cw.writePop("temp", 0)
+        cw.writeGoto("HALT")
+        cw.writeFunction("Worker.run", 0)
+        cw.writePush("constant", 111)
+        cw.writePop("pointer", 0)
+        cw.writePush("constant", 222)
+        cw.writePop("pointer", 1)
+        cw.writePush("constant", 42)
+        cw.writeReturn()
+        cw.setFileName("Caller")
+        cw.writeLabel("HALT")
+
+    initial = {0: 300, 1: 400, 2: 500, 3: 600, 4: 700}
+    ram = _execute_hack_asm(
+        _read_lines(asm_file), initial_ram=initial, stop_label="GLOBAL$Caller$HALT",
+    )
+    assert ram[0] == 301
+    assert ram[300] == 42
+    assert [ram[i] for i in range(1, 5)] == [400, 500, 600, 700]
+    assert ram[5] == 77
+
+
+def test_call_with_arguments_passes_values_and_returns_result(tmp_path: Path) -> None:
+    asm_file = tmp_path / "ArgsBehavior.asm"
+    with CodeWriter(asm_file) as cw:
+        cw.setFileName("Caller")
+        cw.writePush("constant", 7)
+        cw.writePush("constant", 3)
+        cw.writeCall("Worker.subtract", 2)
+        cw.writeGoto("HALT")
+        cw.writeFunction("Worker.subtract", 0)
+        cw.writePush("argument", 0)
+        cw.writePush("argument", 1)
+        cw.writeArithmetic("sub")
+        cw.writeReturn()
+        cw.setFileName("Caller")
+        cw.writeLabel("HALT")
+
+    initial = {0: 300, 1: 400, 2: 500, 3: 600, 4: 700}
+    lines = _read_lines(asm_file)
+    entry = _execute_hack_asm(lines, initial_ram=initial, stop_label="Worker.subtract")
+    assert (entry[0], entry[1], entry[2]) == (307, 307, 300)
+    assert (entry[300], entry[301]) == (7, 3)
+    ram = _execute_hack_asm(lines, initial_ram=initial, stop_label="GLOBAL$Caller$HALT")
+    assert ram[0] == 301
+    assert ram[300] == 4
+    assert [ram[i] for i in range(1, 5)] == [400, 500, 600, 700]
+
+
+def test_nested_calls_restore_each_frame_and_resume_execution(tmp_path: Path) -> None:
+    asm_file = tmp_path / "NestedBehavior.asm"
+    with CodeWriter(asm_file) as cw:
+        cw.setFileName("Caller")
+        cw.writeCall("Outer.run", 0)
+        cw.writePush("constant", 77)
+        cw.writePop("temp", 0)
+        cw.writeGoto("HALT")
+        cw.writeFunction("Outer.run", 1)
+        cw.writePush("constant", 17)
+        cw.writePop("local", 0)
+        cw.writePush("constant", 111)
+        cw.writePop("pointer", 0)
+        cw.writePush("constant", 222)
+        cw.writePop("pointer", 1)
+        cw.writePush("constant", 8)
+        cw.writeCall("Inner.run", 1)
+        cw.writeLabel("AFTER")
+        cw.writePush("local", 0)
+        cw.writeArithmetic("add")
+        cw.writeReturn()
+        cw.writeFunction("Inner.run", 0)
+        cw.writePush("constant", 333)
+        cw.writePop("pointer", 0)
+        cw.writePush("constant", 444)
+        cw.writePop("pointer", 1)
+        cw.writePush("argument", 0)
+        cw.writePush("constant", 2)
+        cw.writeArithmetic("add")
+        cw.writeReturn()
+        cw.setFileName("Caller")
+        cw.writeLabel("HALT")
+
+    initial = {0: 300, 1: 400, 2: 500, 3: 600, 4: 700}
+    lines = _read_lines(asm_file)
+    outer = _execute_hack_asm(lines, initial_ram=initial, stop_label="Outer.run$AFTER")
+    assert [outer[i] for i in range(5)] == [307, 305, 300, 111, 222]
+    assert (outer[305], outer[306]) == (17, 10)
+    ram = _execute_hack_asm(lines, initial_ram=initial, stop_label="GLOBAL$Caller$HALT")
+    assert [ram[i] for i in range(5)] == [301, 400, 500, 600, 700]
+    assert ram[300] == 27
+    assert ram[5] == 77

@@ -6,15 +6,11 @@ import re
 import pytest
 
 from codewriter import CodeWriter, CodeWriterError
+from tests.hack_simulator import _execute_hack_asm
 
 
 def _read_lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
-
-
-def _to_int16(value: int) -> int:
-    value &= 0xFFFF
-    return value - 0x10000 if value & 0x8000 else value
 
 
 def _push_int16_via_vm(cw: CodeWriter, value: int) -> None:
@@ -31,122 +27,6 @@ def _push_int16_via_vm(cw: CodeWriter, value: int) -> None:
         return
     cw.writePush("constant", -value)
     cw.writeArithmetic("neg")
-
-
-def _execute_hack_asm(lines: list[str], initial_sp: int = 256) -> dict[int, int]:
-    """Monta e executa instruções Assembly Hack em complemento de dois de 16 bits."""
-    symbols: dict[str, int] = {
-        "SP": 0,
-        "LCL": 1,
-        "ARG": 2,
-        "THIS": 3,
-        "THAT": 4,
-        "SCREEN": 16384,
-        "KBD": 24576,
-        **{f"R{index}": index for index in range(16)},
-    }
-    rom: list[str] = []
-    for raw_line in lines:
-        clean = raw_line.split("//", 1)[0].strip()
-        if not clean:
-            continue
-        if clean.startswith("(") and clean.endswith(")"):
-            label = clean[1:-1]
-            assert label not in symbols, f"Rótulo duplicado no Assembly: {label}"
-            symbols[label] = len(rom)
-        else:
-            rom.append(clean)
-
-    next_var_addr = 16
-    ram: dict[int, int] = {0: initial_sp}
-    reg_a = 0
-    reg_d = 0
-    pc = 0
-    steps = 0
-
-    while 0 <= pc < len(rom):
-        steps += 1
-        assert steps <= 10_000, "Limite de ciclos excedido na simulação Hack."
-        instr = rom[pc]
-
-        if instr.startswith("@"):
-            token = instr[1:]
-            if token.isdigit():
-                reg_a = int(token)
-            else:
-                if token not in symbols:
-                    symbols[token] = next_var_addr
-                    next_var_addr += 1
-                reg_a = symbols[token]
-            pc += 1
-            continue
-
-        dest = ""
-        jump = ""
-        body = instr
-        if "=" in body:
-            dest, body = body.split("=", 1)
-        if ";" in body:
-            comp, jump = body.split(";", 1)
-        else:
-            comp = body
-
-        mem_val = ram.get(reg_a, 0)
-        alu_ops: dict[str, int] = {
-            "0": 0,
-            "1": 1,
-            "-1": -1,
-            "D": reg_d,
-            "A": reg_a,
-            "M": mem_val,
-            "!D": _to_int16(~reg_d),
-            "!A": _to_int16(~reg_a),
-            "!M": _to_int16(~mem_val),
-            "-D": _to_int16(-reg_d),
-            "-A": _to_int16(-reg_a),
-            "-M": _to_int16(-mem_val),
-            "D+1": _to_int16(reg_d + 1),
-            "A+1": _to_int16(reg_a + 1),
-            "M+1": _to_int16(mem_val + 1),
-            "D-1": _to_int16(reg_d - 1),
-            "A-1": _to_int16(reg_a - 1),
-            "M-1": _to_int16(mem_val - 1),
-            "D+A": _to_int16(reg_d + reg_a),
-            "D+M": _to_int16(reg_d + mem_val),
-            "D-A": _to_int16(reg_d - reg_a),
-            "D-M": _to_int16(reg_d - mem_val),
-            "A-D": _to_int16(reg_a - reg_d),
-            "M-D": _to_int16(mem_val - reg_d),
-            "D&A": _to_int16(reg_d & reg_a),
-            "D&M": _to_int16(reg_d & mem_val),
-            "D|A": _to_int16(reg_d | reg_a),
-            "D|M": _to_int16(reg_d | mem_val),
-        }
-        assert comp in alu_ops, f"Expressão ALU Hack inválida: {comp!r}"
-        result = alu_ops[comp]
-
-        old_a = reg_a
-        if "M" in dest:
-            ram[old_a] = result
-        if "D" in dest:
-            reg_d = result
-        if "A" in dest:
-            reg_a = result
-
-        jump_conditions: dict[str, bool] = {
-            "": False,
-            "JGT": result > 0,
-            "JEQ": result == 0,
-            "JGE": result >= 0,
-            "JLT": result < 0,
-            "JNE": result != 0,
-            "JLE": result <= 0,
-            "JMP": True,
-        }
-        assert jump in jump_conditions, f"Condição de salto Hack inválida: {jump!r}"
-        pc = old_a if jump_conditions[jump] else pc + 1
-
-    return ram
 
 
 def test_arithmetic_binary_commands_and_sub_operand_order(tmp_path: Path) -> None:
@@ -575,3 +455,79 @@ def test_opening_unwritable_output_path_raises_error(tmp_path: Path) -> None:
 
     with pytest.raises(CodeWriterError, match="Não foi possível abrir"):
         CodeWriter(missing_dir_output)
+
+
+def test_hack_simulator_uses_old_a_for_simultaneous_memory_destination() -> None:
+    initial = {0: 257, 256: 42, 257: 99}
+    ram = _execute_hack_asm(
+        ["@SP", "AM=M-1", "D=M", "@R5", "M=D"],
+        initial_ram=initial,
+    )
+    assert ram[0] == 256
+    assert ram[5] == 42
+    assert ram[256] == 42
+    assert ram[257] == 99
+    assert initial == {0: 257, 256: 42, 257: 99}
+
+
+def test_hack_simulator_masks_memory_address_to_15_bits() -> None:
+    ram = _execute_hack_asm(
+        ["@32767", "A=A+1", "M=1", "D=M", "@R5", "M=D"],
+    )
+    assert ram[0] == 1
+    assert ram[5] == 1
+    assert -32768 not in ram
+
+
+def test_hack_simulator_jumps_to_old_a_using_15_bits() -> None:
+    ram = _execute_hack_asm(
+        [
+            "@TARGET", "D=A", "@32767", "A=A+1", "A=D+A",
+            "A=0;JMP", "@R5", "M=-1", "(TARGET)", "@R6", "M=1",
+        ],
+        initial_ram={5: 77},
+    )
+    assert ram[5] == 77
+    assert ram[6] == 1
+
+
+def test_hack_simulator_wraps_alu_result_and_uses_signed_jump() -> None:
+    ram = _execute_hack_asm(
+        [
+            "@32767", "D=A", "D=D+1", "@NEG", "D;JLT", "@R5", "M=-1",
+            "(NEG)", "@R6", "M=D",
+        ],
+        initial_ram={5: 77},
+    )
+    assert ram[5] == 77
+    assert ram[6] == -32768
+
+
+def test_hack_simulator_stops_before_label_instruction() -> None:
+    ram = _execute_hack_asm(
+        ["@R5", "M=1", "(STOP)", "@R5", "M=-1"],
+        stop_label="STOP",
+        max_steps=2,
+    )
+    assert ram[5] == 1
+
+
+def test_hack_simulator_rejects_cycle_limit_exceeded() -> None:
+    with pytest.raises(AssertionError, match="Limite de ciclos excedido"):
+        _execute_hack_asm(["(LOOP)", "@LOOP", "0;JMP"], max_steps=4)
+
+
+def test_hack_simulator_rejects_missing_or_unreached_stop_label() -> None:
+    with pytest.raises(AssertionError, match="inexistente"):
+        _execute_hack_asm(["@0"], stop_label="STOP")
+    with pytest.raises(AssertionError, match="não alcançado"):
+        _execute_hack_asm(
+            ["@END", "0;JMP", "(STOP)", "@0", "(END)"],
+            stop_label="STOP",
+        )
+
+
+@pytest.mark.parametrize("instruction", ["D=Q", "X=D", "D;JXX", "@32768"])
+def test_hack_simulator_rejects_invalid_instructions(instruction: str) -> None:
+    with pytest.raises(AssertionError):
+        _execute_hack_asm([instruction])

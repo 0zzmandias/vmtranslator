@@ -9,6 +9,7 @@ import pytest
 
 from codewriter import CodeWriter
 from main import CLIError, main, resolve_io, translate
+from tests.hack_simulator import _execute_hack_asm
 
 
 def test_single_file_never_emits_bootstrap_even_if_named_sys_vm(
@@ -837,3 +838,30 @@ def test_cli_accepts_recursive_multiple_returns_and_functions_without_return(
     lines = translate(str(vm_file)).read_text(encoding="utf-8").splitlines()
     assert "(Main.run)" in lines
     assert lines.count("// return") == return_count
+
+
+def test_directory_bootstrap_enters_sys_init_with_complete_call_frame(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "BootstrapBehavior"
+    proj_dir.mkdir()
+    (proj_dir / "A.vm").write_text(
+        "function A.run 0\npush constant 0\nreturn\n", encoding="utf-8",
+    )
+    (proj_dir / "Sys.vm").write_text(
+        "function Sys.init 2\nlabel HALT\ngoto HALT\n", encoding="utf-8",
+    )
+
+    assert main([str(proj_dir)]) == 0
+    assert capsys.readouterr().err == ""
+    lines = (proj_dir / "BootstrapBehavior.asm").read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "// bootstrap"
+    assert lines.count("// bootstrap") == 1
+    assert lines.index("// call Sys.init 0") < lines.index("(A.run)")
+    initial = {0: 123, 1: 400, 2: 500, 3: 600, 4: 700, 261: 19, 262: 23}
+    ram = _execute_hack_asm(lines, initial_ram=initial, stop_label="Sys.init")
+    assert (ram[0], ram[1], ram[2]) == (261, 261, 256)
+    assert [ram[i] for i in range(257, 261)] == [400, 500, 600, 700]
+    assert (ram[3], ram[4]) == (600, 700)
+    assert (ram[261], ram[262]) == (19, 23)
