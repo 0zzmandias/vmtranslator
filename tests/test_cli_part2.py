@@ -736,3 +736,104 @@ def test_bootstrap_accepts_forward_recursive_repeated_and_cross_file_calls(
     assert lines.count("@Z.step") == 3
     assert "(Z.step)" in lines
     assert lines.index("(A.run)") < lines.index("(Z.step)")
+
+
+@pytest.mark.parametrize("existing_output", [False, True])
+@pytest.mark.parametrize("following_function", [False, True])
+def test_cli_rejects_return_before_function_without_creating_temp(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    existing_output: bool,
+    following_function: bool,
+) -> None:
+    vm_file = tmp_path / "Outside.vm"
+    content = "// comentario\npush constant 1\nreturn\n"
+    if following_function:
+        content += "function Main.run 0\npush constant 0\nreturn\n"
+    vm_file.write_text(content, encoding="utf-8")
+    asm_file = vm_file.with_suffix(".asm")
+    previous_content = b"// assembly anterior\n@256\n"
+    if existing_output:
+        asm_file.write_bytes(previous_content)
+
+    def unexpected_mkstemp(*args: object, **kwargs: object) -> None:
+        pytest.fail("A validação deveria ocorrer antes de criar o temporário.")
+
+    monkeypatch.setattr("main.cli.tempfile.mkstemp", unexpected_mkstemp)
+    assert main([str(vm_file)]) == 1
+    message = capsys.readouterr().err
+    assert f"{vm_file}:3:" in message
+    assert "return" in message
+    assert "fora de função" in message
+    if existing_output:
+        assert asm_file.read_bytes() == previous_content
+    else:
+        assert not asm_file.exists()
+    expected_files = {vm_file.name, asm_file.name} if existing_output else {vm_file.name}
+    assert {entry.name for entry in tmp_path.iterdir()} == expected_files
+
+
+@pytest.mark.parametrize("existing_output", [False, True])
+def test_cli_return_scope_does_not_leak_between_files(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    existing_output: bool,
+) -> None:
+    proj_dir = tmp_path / "ReturnScope"
+    proj_dir.mkdir()
+    (proj_dir / "A.vm").write_text(
+        "function A.run 0\npush constant 1\nreturn\n",
+        encoding="utf-8",
+    )
+    vm_file = proj_dir / "B.vm"
+    vm_file.write_text("push constant 2\nreturn\n", encoding="utf-8")
+    asm_file = proj_dir / "ReturnScope.asm"
+    previous_content = b"// assembly anterior\n@256\n"
+    if existing_output:
+        asm_file.write_bytes(previous_content)
+
+    def unexpected_mkstemp(*args: object, **kwargs: object) -> None:
+        pytest.fail("A validação deveria ocorrer antes de criar o temporário.")
+
+    monkeypatch.setattr("main.cli.tempfile.mkstemp", unexpected_mkstemp)
+    assert main([str(proj_dir)]) == 1
+    message = capsys.readouterr().err
+    assert f"{vm_file}:2:" in message
+    assert "return" in message
+    assert "fora de função" in message
+    if existing_output:
+        assert asm_file.read_bytes() == previous_content
+    else:
+        assert not asm_file.exists()
+    expected_files = {"A.vm", "B.vm"}
+    if existing_output:
+        expected_files.add(asm_file.name)
+    assert {entry.name for entry in proj_dir.iterdir()} == expected_files
+
+
+@pytest.mark.parametrize(
+    ("content", "return_count"),
+    [
+        (
+            "function Main.run 0\n"
+            "push argument 0\nif-goto RECURSE\n"
+            "push constant 0\nreturn\n"
+            "label RECURSE\npush argument 0\npush constant 1\nsub\n"
+            "call Main.run 1\nreturn\n",
+            2,
+        ),
+        ("function Main.run 0\nlabel HALT\ngoto HALT\n", 0),
+    ],
+)
+def test_cli_accepts_recursive_multiple_returns_and_functions_without_return(
+    tmp_path: Path,
+    content: str,
+    return_count: int,
+) -> None:
+    vm_file = tmp_path / "Main.vm"
+    vm_file.write_text(content, encoding="utf-8")
+    lines = translate(str(vm_file)).read_text(encoding="utf-8").splitlines()
+    assert "(Main.run)" in lines
+    assert lines.count("// return") == return_count

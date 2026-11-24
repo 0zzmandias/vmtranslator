@@ -274,9 +274,12 @@ def test_write_return_reads_retaddr_before_overwriting_arg0_and_restores_frame(
 ) -> None:
     asm_file = tmp_path / "Return.asm"
     with CodeWriter(asm_file) as cw:
+        cw.writeFunction("Main.run", 0)
         cw.writeReturn()
 
     lines = _read_lines(asm_file)
+    assert lines[:2] == ["// function Main.run 0", "(Main.run)"]
+    lines = lines[2:]
     assert lines == [
         "// return",
         "@LCL",
@@ -436,5 +439,38 @@ def test_predefined_function_symbol_is_rejected_without_changing_writer_state(
         assert predefined in str(exc_info.value)
         cw.writeLabel("AFTER")
         cw.writeCall("External.f", 0)
+
+    assert asm_file.read_bytes() == reference_file.read_bytes()
+
+
+@pytest.mark.parametrize("context", ["initial", "call", "bootstrap", "new_file"])
+def test_write_return_rejects_missing_function_without_emitting_code(
+    tmp_path: Path,
+    context: str,
+) -> None:
+    asm_file = tmp_path / "Outside.asm"
+    reference_file = tmp_path / "Reference.asm"
+
+    def prepare(writer: CodeWriter) -> None:
+        if context == "call":
+            writer.writeCall("External.f", 0)
+        elif context == "bootstrap":
+            writer.writeInit()
+        elif context == "new_file":
+            writer.setFileName("First")
+            writer.writeFunction("First.run", 0)
+            writer.setFileName("Second")
+
+    with CodeWriter(reference_file) as cw:
+        prepare(cw)
+        cw.writeFunction("Main.run", 0)
+        cw.writeReturn()
+
+    with CodeWriter(asm_file) as cw:
+        prepare(cw)
+        with pytest.raises(CodeWriterError, match="fora de função"):
+            cw.writeReturn()
+        cw.writeFunction("Main.run", 0)
+        cw.writeReturn()
 
     assert asm_file.read_bytes() == reference_file.read_bytes()

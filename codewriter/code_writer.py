@@ -674,6 +674,8 @@ class CodeWriter:
     def writeReturn(self) -> None:
         """Traduz o retorno de função restaurando o frame do chamador."""
         self._ensure_open()
+        if self._current_function is None:
+            raise CodeWriterError("Comando 'return' fora de função.")
         self._write_lines(
             [
                 "// return",

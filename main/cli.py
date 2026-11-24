@@ -159,6 +159,9 @@ def collect_program_symbols(
                     is_definition=False,
                     location=location,
                 )
+            elif command_type == CommandType.C_RETURN:
+                if current_function is None:
+                    raise CLIError(f"{location}: comando 'return' fora de função.")
             elif command_type == CommandType.C_LABEL:
                 scoped = CodeWriter.format_scoped_label(
                     vm_parser.arg1(),
