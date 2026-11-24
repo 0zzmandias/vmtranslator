@@ -207,6 +207,68 @@ def test_return_labels_and_comparison_labels_remain_globally_unique(
     assert "Main.f$ret.3" in declared_labels
 
 
+def test_write_call_skips_reserved_return_label_from_vm_label(
+    tmp_path: Path,
+) -> None:
+    asm_file = tmp_path / "ReservedReturn.asm"
+    with CodeWriter(asm_file, reserved_symbols={"Main.f$ret.0"}) as cw:
+        cw.writeFunction("Main.f", 0)
+        cw.writeCall("Other.g", 0)
+        cw.writeLabel("ret.0")
+
+    lines = _read_lines(asm_file)
+    assert "@Main.f$ret.1" in lines
+    assert "(Main.f$ret.1)" in lines
+    assert lines.count("(Main.f$ret.0)") == 1
+    assert "@Main.f$ret.0" not in lines
+
+
+def test_write_call_avoids_collision_with_static_symbol_and_prior_label(
+    tmp_path: Path,
+) -> None:
+    asm_file = tmp_path / "StaticAndLabelCollision.asm"
+    with CodeWriter(asm_file) as cw:
+        cw.setFileName("Main.f$ret")
+        cw.writePush("static", 0)
+        cw.writeFunction("Main.f", 0)
+        cw.writeLabel("ret.1")
+        cw.writeCall("Other.g", 0)
+
+    lines = _read_lines(asm_file)
+    assert "@Main.f$ret.0" in lines
+    assert "(Main.f$ret.0)" not in lines
+    assert lines.count("(Main.f$ret.1)") == 1
+    assert "@Main.f$ret.2" in lines
+    assert "(Main.f$ret.2)" in lines
+
+
+def test_write_init_skips_reserved_global_return_label(tmp_path: Path) -> None:
+    asm_file = tmp_path / "BootstrapReserved.asm"
+    with CodeWriter(asm_file, reserved_symbols={"GLOBAL$ret.0"}) as cw:
+        cw.writeInit()
+
+    lines = _read_lines(asm_file)
+    assert "@GLOBAL$ret.0" not in lines
+    assert "(GLOBAL$ret.0)" not in lines
+    assert "@GLOBAL$ret.1" in lines
+    assert "(GLOBAL$ret.1)" in lines
+
+
+def test_comparison_avoids_collision_with_reserved_function_name(
+    tmp_path: Path,
+) -> None:
+    asm_file = tmp_path / "ComparisonFunctionCollision.asm"
+    with CodeWriter(asm_file, reserved_symbols={"VM_LT_TRUE_0"}) as cw:
+        cw.writeArithmetic("lt")
+        cw.writeFunction("VM_LT_TRUE_0", 0)
+
+    lines = _read_lines(asm_file)
+    assert "(VM_LT_TRUE_1)" in lines
+    assert "(VM_LT_END_1)" in lines
+    assert "(VM_LT_END_0)" not in lines
+    assert lines.count("(VM_LT_TRUE_0)") == 1
+
+
 def test_write_return_reads_retaddr_before_overwriting_arg0_and_restores_frame(
     tmp_path: Path,
 ) -> None:

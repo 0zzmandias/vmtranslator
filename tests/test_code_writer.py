@@ -97,6 +97,38 @@ def test_comparison_commands_generate_unique_labels_and_boolean_values(
     assert "M=0" in lines
 
 
+def test_comparison_labels_skip_reserved_symbols_atomically(tmp_path: Path) -> None:
+    asm_file = tmp_path / "ReservedComparisons.asm"
+    reserved = {"VM_EQ_END_0", "VM_GT_TRUE_2"}
+    with CodeWriter(asm_file, reserved_symbols=reserved) as cw:
+        cw.writeArithmetic("eq")
+        cw.writeArithmetic("gt")
+
+    lines = _read_lines(asm_file)
+    assert "(VM_EQ_TRUE_0)" not in lines
+    assert "(VM_EQ_END_0)" not in lines
+    assert "(VM_EQ_TRUE_1)" in lines
+    assert "(VM_EQ_END_1)" in lines
+    assert "(VM_GT_TRUE_2)" not in lines
+    assert "(VM_GT_END_2)" not in lines
+    assert "(VM_GT_TRUE_3)" in lines
+    assert "(VM_GT_END_3)" in lines
+
+
+def test_predefined_hack_symbols_table_is_complete() -> None:
+    expected = {
+        "SP",
+        "LCL",
+        "ARG",
+        "THIS",
+        "THAT",
+        "SCREEN",
+        "KBD",
+        *(f"R{index}" for index in range(16)),
+    }
+    assert CodeWriter.PREDEFINED_HACK_SYMBOLS == expected
+
+
 @pytest.mark.parametrize("value", [0, 17, 32767])
 def test_push_constant_valid_boundaries(tmp_path: Path, value: int) -> None:
     asm_file = tmp_path / f"Const_{value}.asm"

@@ -1,5 +1,6 @@
 """Gerador de código Assembly Hack a partir de comandos da linguagem VM."""
 
+from collections.abc import Callable, Iterable
 from pathlib import Path
 import re
 from types import TracebackType
@@ -13,6 +14,19 @@ _MAX_INDEX = 32767
 _TEMP_BASE = 5
 _MAX_TEMP_INDEX = 7
 _CALL_FRAME_SIZE = 5
+
+_PREDEFINED_HACK_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "SP",
+        "LCL",
+        "ARG",
+        "THIS",
+        "THAT",
+        "SCREEN",
+        "KBD",
+        *(f"R{index}" for index in range(16)),
+    }
+)
 
 _BINARY_ARITHMETIC_OPS: dict[str, str] = {
     "add": "M=D+M",
@@ -60,11 +74,20 @@ class CodeWriterError(Exception):
 class CodeWriter:
     """Traduz comandos VM para Assembly Hack e grava no arquivo .asm de saída."""
 
-    def __init__(self, output_path: str | Path) -> None:
+    PREDEFINED_HACK_SYMBOLS: frozenset[str] = _PREDEFINED_HACK_SYMBOLS
+
+    def __init__(
+        self,
+        output_path: str | Path,
+        reserved_symbols: Iterable[str] | None = None,
+    ) -> None:
         self._output_path = Path(output_path)
         self._file_name: str | None = None
         self._current_function: str | None = None
         self._label_counter: int = 0
+        self._reserved_symbols: set[str] = set(_PREDEFINED_HACK_SYMBOLS)
+        if reserved_symbols is not None:
+            self._reserved_symbols.update(reserved_symbols)
         self._closed: bool = False
 
         try:
@@ -73,6 +96,44 @@ class CodeWriter:
             raise CodeWriterError(
                 f"Não foi possível abrir o arquivo de saída '{self._output_path}': {exc}"
             ) from exc
+
+    @staticmethod
+    def validate_file_name(name: str) -> None:
+        """Valida se o nome base do arquivo .vm é um símbolo Assembly Hack válido."""
+        if not isinstance(name, str) or not name or not _HACK_SYMBOL_RE.fullmatch(name):
+            raise CodeWriterError(
+                f"Nome de arquivo inválido para símbolos Assembly Hack: {name!r}."
+            )
+
+    @staticmethod
+    def format_scope(
+        file_name: str | None = None,
+        function_name: str | None = None,
+    ) -> str:
+        """Resolve o prefixo de escopo Assembly para função corrente, arquivo ou global."""
+        if function_name is not None:
+            return function_name
+        if file_name is not None:
+            return f"{_DEFAULT_FUNCTION_SCOPE}${file_name}"
+        return _DEFAULT_FUNCTION_SCOPE
+
+    @staticmethod
+    def format_scoped_label(
+        label: str,
+        file_name: str | None = None,
+        function_name: str | None = None,
+    ) -> str:
+        """Retorna o nome Assembly final de um rótulo VM no escopo informado."""
+        scope = CodeWriter.format_scope(
+            file_name=file_name,
+            function_name=function_name,
+        )
+        return f"{scope}${label}"
+
+    @staticmethod
+    def format_static_symbol(file_name: str, index: int) -> str:
+        """Retorna o nome Assembly final de uma variável do segmento static."""
+        return f"{file_name}.{index}"
 
     def __enter__(self) -> Self:
         return self
@@ -111,14 +172,17 @@ class CodeWriter:
             )
 
     def _current_scope(self) -> str:
-        if self._current_function is not None:
-            return self._current_function
-        if self._file_name is not None:
-            return f"{_DEFAULT_FUNCTION_SCOPE}${self._file_name}"
-        return _DEFAULT_FUNCTION_SCOPE
+        return self.format_scope(
+            file_name=self._file_name,
+            function_name=self._current_function,
+        )
 
     def _scoped_label(self, label: str) -> str:
-        return f"{self._current_scope()}${label}"
+        return self.format_scoped_label(
+            label,
+            file_name=self._file_name,
+            function_name=self._current_function,
+        )
 
     def _require_file_name(self) -> str:
         if self._file_name is None:
@@ -131,6 +195,18 @@ class CodeWriter:
         label_id = self._label_counter
         self._label_counter += 1
         return label_id
+
+    def _allocate_internal_labels(
+        self,
+        build_labels: Callable[[int], tuple[str, ...]],
+    ) -> tuple[str, ...]:
+        """Reserva atomicamente um conjunto de rótulos internos livres de colisão."""
+        while True:
+            label_id = self._next_label_id()
+            candidates = build_labels(label_id)
+            if all(symbol not in self._reserved_symbols for symbol in candidates):
+                self._reserved_symbols.update(candidates)
+                return candidates
 
     def _write_lines(self, lines: list[str]) -> None:
         self._ensure_open()
@@ -162,10 +238,7 @@ class CodeWriter:
     def setFileName(self, name: str) -> None:
         """Define o nome do arquivo .vm corrente (sem extensão) para símbolos static."""
         self._ensure_open()
-        if not isinstance(name, str) or not name or not _HACK_SYMBOL_RE.fullmatch(name):
-            raise CodeWriterError(
-                f"Nome de arquivo inválido para símbolos Assembly Hack: {name!r}."
-            )
+        self.validate_file_name(name)
         self._file_name = name
         self._current_function = None
 
@@ -216,9 +289,13 @@ class CodeWriter:
             return
 
         jump = _COMPARISON_JUMPS[cmd]
-        label_id = self._next_label_id()
-        true_label = f"VM_{cmd.upper()}_TRUE_{label_id}"
-        end_label = f"VM_{cmd.upper()}_END_{label_id}"
+        cmd_upper = cmd.upper()
+        true_label, end_label = self._allocate_internal_labels(
+            lambda label_id: (
+                f"VM_{cmd_upper}_TRUE_{label_id}",
+                f"VM_{cmd_upper}_END_{label_id}",
+            )
+        )
         self._write_lines(
             [
                 f"// {cmd}",
@@ -311,10 +388,12 @@ class CodeWriter:
         # segment == "static"
         self._validate_15bit_index(index, "push static")
         file_name = self._require_file_name()
+        static_symbol = self.format_static_symbol(file_name, index)
+        self._reserved_symbols.add(static_symbol)
         self._write_lines(
             [
                 f"// push static {index}",
-                f"@{file_name}.{index}",
+                f"@{static_symbol}",
                 "D=M",
                 *self._push_d(),
             ]
@@ -386,11 +465,13 @@ class CodeWriter:
         # segment == "static"
         self._validate_15bit_index(index, "pop static")
         file_name = self._require_file_name()
+        static_symbol = self.format_static_symbol(file_name, index)
+        self._reserved_symbols.add(static_symbol)
         self._write_lines(
             [
                 f"// pop static {index}",
                 *self._pop_to_d(),
-                f"@{file_name}.{index}",
+                f"@{static_symbol}",
                 "M=D",
             ]
         )
@@ -400,6 +481,7 @@ class CodeWriter:
         self._ensure_open()
         self._validate_identifier(label, "label")
         scoped = self._scoped_label(label)
+        self._reserved_symbols.add(scoped)
         self._write_lines(
             [
                 f"// label {label}",
@@ -412,6 +494,7 @@ class CodeWriter:
         self._ensure_open()
         self._validate_identifier(label, "goto")
         scoped = self._scoped_label(label)
+        self._reserved_symbols.add(scoped)
         self._write_lines(
             [
                 f"// goto {label}",
@@ -425,6 +508,7 @@ class CodeWriter:
         self._ensure_open()
         self._validate_identifier(label, "if-goto")
         scoped = self._scoped_label(label)
+        self._reserved_symbols.add(scoped)
         self._write_lines(
             [
                 f"// if-goto {label}",
@@ -442,6 +526,7 @@ class CodeWriter:
         self._validate_15bit_index(num_vars, "function")
 
         self._current_function = function_name
+        self._reserved_symbols.add(function_name)
         lines = [
             f"// function {function_name} {num_vars}",
             f"({function_name})",
@@ -466,7 +551,11 @@ class CodeWriter:
         arg_offset = _CALL_FRAME_SIZE + num_args
         self._validate_15bit_index(arg_offset, "call")
 
-        return_label = f"{self._current_scope()}$ret.{self._next_label_id()}"
+        self._reserved_symbols.add(function_name)
+        scope = self._current_scope()
+        (return_label,) = self._allocate_internal_labels(
+            lambda label_id: (f"{scope}$ret.{label_id}",)
+        )
         lines = [
             f"// call {function_name} {num_args}",
             f"@{return_label}",

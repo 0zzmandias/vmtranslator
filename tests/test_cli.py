@@ -191,6 +191,151 @@ def test_cli_removes_partial_asm_on_invalid_utf8(
     assert not asm_file.exists()
 
 
+def test_cli_rejects_function_and_static_symbol_collision(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vm_file = tmp_path / "Foo.vm"
+    vm_file.write_text(
+        "function Foo.0 0\n"
+        "push static 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "colisão" in captured.err
+    assert "Foo.0" in captured.err
+    assert not (tmp_path / "Foo.asm").exists()
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_symbol"),
+    [
+        (
+            "function Dup.f 0\nreturn\nfunction Dup.f 0\nreturn\n",
+            "Dup.f",
+        ),
+        (
+            "function Main.f 0\nlabel LOOP\nlabel LOOP\nreturn\n",
+            "Main.f$LOOP",
+        ),
+    ],
+)
+def test_cli_rejects_duplicate_function_and_label_definitions(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    content: str,
+    expected_symbol: str,
+) -> None:
+    vm_file = tmp_path / "DuplicateDef.vm"
+    vm_file.write_text(content, encoding="utf-8")
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "definição duplicada" in captured.err
+    assert expected_symbol in captured.err
+    assert not (tmp_path / "DuplicateDef.asm").exists()
+
+
+@pytest.mark.parametrize("predefined", ["SP", "LCL", "ARG", "R0", "R15", "SCREEN", "KBD"])
+def test_cli_rejects_predefined_hack_symbol_definition(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    predefined: str,
+) -> None:
+    vm_file = tmp_path / "PredefinedCollision.vm"
+    vm_file.write_text(
+        f"function {predefined} 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "predefinido" in captured.err
+    assert predefined in captured.err
+    assert not (tmp_path / "PredefinedCollision.asm").exists()
+
+
+def test_cli_allows_repeated_calls_gotos_and_static_accesses(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vm_file = tmp_path / "RepeatedRefs.vm"
+    vm_file.write_text(
+        "function Main.ok 0\n"
+        "push constant 1\n"
+        "pop static 0\n"
+        "push static 0\n"
+        "pop static 0\n"
+        "call Helper.step 0\n"
+        "call Helper.step 0\n"
+        "label LOOP\n"
+        "goto LOOP\n"
+        "push constant 0\n"
+        "if-goto LOOP\n"
+        "return\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert (tmp_path / "RepeatedRefs.asm").is_file()
+
+
+def test_cli_skips_reserved_return_and_comparison_labels_declared_later(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vm_file = tmp_path / "LaterCollision.vm"
+    vm_file.write_text(
+        "function Main.f 0\n"
+        "call Other.g 0\n"
+        "label ret.0\n"
+        "push constant 1\n"
+        "push constant 1\n"
+        "eq\n"
+        "return\n"
+        "function VM_EQ_TRUE_2 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+
+    lines = (tmp_path / "LaterCollision.asm").read_text(encoding="utf-8").splitlines()
+    assert "@Main.f$ret.1" in lines
+    assert "(Main.f$ret.1)" in lines
+    assert "@Main.f$ret.0" not in lines
+    assert lines.count("(Main.f$ret.0)") == 1
+    assert "(VM_EQ_TRUE_3)" in lines
+    assert "(VM_EQ_END_3)" in lines
+    assert "(VM_EQ_END_2)" not in lines
+    assert lines.count("(VM_EQ_TRUE_2)") == 1
+
+    declared_labels = [
+        match.group(1)
+        for line in lines
+        if (match := re.fullmatch(r"\(([^)]+)\)", line))
+    ]
+    assert len(declared_labels) == len(set(declared_labels))
+
+
 def test_translate_returns_generated_asm_path(tmp_path: Path) -> None:
     vm_file = tmp_path / "ReturnPath.vm"
     vm_file.write_text("push constant 1\npush constant 2\nadd\n", encoding="utf-8")

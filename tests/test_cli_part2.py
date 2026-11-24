@@ -174,6 +174,149 @@ def test_directory_isolates_global_labels_across_files_without_functions(
     assert len(declared_labels) == len(set(declared_labels))
 
 
+def test_directory_rejects_function_and_static_collision_across_files(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "CrossFileCollision"
+    proj_dir.mkdir()
+    (proj_dir / "Foo.vm").write_text(
+        "function Foo.init 0\n"
+        "push constant 1\n"
+        "pop static 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "Main.vm").write_text(
+        "function Foo.0 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "colisão" in captured.err
+    assert "Foo.0" in captured.err
+    assert not (proj_dir / "CrossFileCollision.asm").exists()
+
+
+def test_directory_rejects_call_reference_and_static_collision_across_files(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "RefStaticCollision"
+    proj_dir.mkdir()
+    (proj_dir / "Foo.vm").write_text(
+        "function Foo.init 0\n"
+        "push static 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "Main.vm").write_text(
+        "function Main.run 0\n"
+        "call Foo.0 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "colisão" in captured.err
+    assert "Foo.0" in captured.err
+    assert not (proj_dir / "RefStaticCollision.asm").exists()
+
+
+def test_directory_rejects_duplicate_function_across_files(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "DupFuncAcrossFiles"
+    proj_dir.mkdir()
+    (proj_dir / "A.vm").write_text("function Shared.f 0\nreturn\n", encoding="utf-8")
+    (proj_dir / "B.vm").write_text("function Shared.f 0\nreturn\n", encoding="utf-8")
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "definição duplicada" in captured.err
+    assert "Shared.f" in captured.err
+    assert not (proj_dir / "DupFuncAcrossFiles.asm").exists()
+
+
+def test_directory_reserves_symbols_from_later_files_and_protects_bootstrap(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "LaterReservation"
+    proj_dir.mkdir()
+    (proj_dir / "A.vm").write_text(
+        "function B.run 0\n"
+        "push constant 1\n"
+        "push constant 1\n"
+        "eq\n"
+        "call Z.done 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "B.run$ret.vm").write_text(
+        "function Helper.keep 0\n"
+        "push static 4\n"
+        "return\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "Sys.vm").write_text(
+        "function Sys.init 0\n"
+        "call B.run 0\n"
+        "label HALT\n"
+        "goto HALT\n"
+        "function GLOBAL 0\n"
+        "label ret.0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "Z.vm").write_text(
+        "function Z.done 0\n"
+        "return\n"
+        "function VM_EQ_END_2 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+
+    lines = (proj_dir / "LaterReservation.asm").read_text(encoding="utf-8").splitlines()
+    assert "@GLOBAL$ret.1" in lines
+    assert "(GLOBAL$ret.1)" in lines
+    assert "@GLOBAL$ret.0" not in lines
+    assert lines.count("(GLOBAL$ret.0)") == 1
+
+    assert "(VM_EQ_TRUE_3)" in lines
+    assert "(VM_EQ_END_3)" in lines
+    assert "(VM_EQ_TRUE_2)" not in lines
+    assert lines.count("(VM_EQ_END_2)") == 1
+
+    assert "@B.run$ret.4" in lines
+    assert "(B.run$ret.4)" not in lines
+    assert "@B.run$ret.5" in lines
+    assert "(B.run$ret.5)" in lines
+
+    declared_labels = [
+        match.group(1)
+        for line in lines
+        if (match := re.fullmatch(r"\(([^)]+)\)", line))
+    ]
+    assert len(declared_labels) == len(set(declared_labels))
+
+
 def test_directory_without_vm_files_returns_error_and_creates_no_asm(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
