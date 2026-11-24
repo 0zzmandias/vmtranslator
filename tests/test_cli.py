@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 import pytest
 
@@ -485,3 +487,76 @@ def test_single_file_allows_unresolved_external_function(
     assert "@Math.multiply" in lines
     assert "(Math.multiply)" not in lines
     assert "// bootstrap" not in lines
+
+
+@pytest.mark.parametrize(
+    "command_prefix",
+    ["push constant", "pop local", "function Main.f", "call Main.f"],
+)
+@pytest.mark.parametrize("existing_output", [False, True])
+def test_cli_reports_oversized_numeric_argument_without_traceback(
+    tmp_path: Path,
+    command_prefix: str,
+    existing_output: bool,
+) -> None:
+    vm_file = tmp_path / "Oversized.vm"
+    token = "9" * 4301
+    vm_file.write_text(
+        f"// comentario\n\n{command_prefix} {token}\n",
+        encoding="utf-8",
+    )
+    asm_file = vm_file.with_suffix(".asm")
+    previous_content = b"// assembly anterior\n@256\n"
+    if existing_output:
+        asm_file.write_bytes(previous_content)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-X",
+            "int_max_str_digits=4300",
+            "-c",
+            "from main import main; raise SystemExit(main())",
+            str(vm_file),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert f"Erro: {vm_file}:3:" in result.stderr
+    assert f"'{command_prefix.split()[0]}'" in result.stderr
+    assert "conversão" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert token not in result.stderr
+    if existing_output:
+        assert asm_file.read_bytes() == previous_content
+    else:
+        assert not asm_file.exists()
+    expected_files = {vm_file.name, asm_file.name} if existing_output else {vm_file.name}
+    assert {entry.name for entry in tmp_path.iterdir()} == expected_files
+
+
+@pytest.mark.parametrize("value", [32767, 32768])
+def test_cli_preserves_constant_15bit_limit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    value: int,
+) -> None:
+    vm_file = tmp_path / "ConstantLimit.vm"
+    vm_file.write_text(f"push constant {value}\n", encoding="utf-8")
+    asm_file = vm_file.with_suffix(".asm")
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+    if value == 32767:
+        assert exit_code == 0
+        assert captured.err == ""
+        assert "@32767" in asm_file.read_text(encoding="utf-8").splitlines()
+    else:
+        assert exit_code == 1
+        assert "15 bits" in captured.err
+        assert not asm_file.exists()

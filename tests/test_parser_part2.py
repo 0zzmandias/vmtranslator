@@ -1,6 +1,7 @@
 """Testes unitários abrangentes do módulo parser (Parte 2)."""
 
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -144,3 +145,28 @@ def test_part2_syntax_errors_report_file_and_line(
     assert error.filename == str(vm_file)
     assert "BrokenPart2.vm:3:" in str(error)
     assert expected_fragment in str(error)
+
+
+@pytest.mark.parametrize("command_prefix", ["function Main.f", "call Main.f"])
+def test_oversized_numeric_argument_raises_contextual_parser_error(
+    tmp_path: Path,
+    command_prefix: str,
+) -> None:
+    token = "9" * 4301
+    vm_file = _write_vm(tmp_path, f"// comentario\n\n{command_prefix} {token}\n")
+    previous_limit = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(4300)
+        with pytest.raises(ParserError) as exc_info:
+            Parser(vm_file)
+    finally:
+        sys.set_int_max_str_digits(previous_limit)
+
+    error = exc_info.value
+    assert error.filename == str(vm_file)
+    assert error.line_number == 3
+    assert f"{vm_file}:3:" in str(error)
+    assert f"'{command_prefix.split()[0]}'" in str(error)
+    assert "conversão" in str(error)
+    assert isinstance(error.__cause__, ValueError)
+    assert token not in str(error)

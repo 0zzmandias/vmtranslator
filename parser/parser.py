@@ -255,7 +255,15 @@ class Parser:
                 filename=self._filepath,
                 line_number=line_number,
             )
-        return int(token)
+        try:
+            return int(token)
+        except ValueError as exc:
+            raise ParserError(
+                f"Segundo argumento de '{keyword}' excede o limite de conversão "
+                "de inteiros do Python.",
+                filename=self._filepath,
+                line_number=line_number,
+            ) from exc
 
     def _require_current(self) -> ParsedCommand:
         if self._current is None:
