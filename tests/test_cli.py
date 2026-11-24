@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from codewriter import CodeWriter
 from main import CLIError, main, resolve_io, translate
 
 
@@ -189,6 +190,118 @@ def test_cli_removes_partial_asm_on_invalid_utf8(
     assert exit_code == 1
     assert "UTF-8" in captured.err
     assert not asm_file.exists()
+
+
+@pytest.mark.parametrize(
+    "vm_content",
+    [
+        "push constant 7\ninvalid_cmd\n",
+        "push constant 7\npop constant 0\n",
+    ],
+)
+def test_cli_preserves_existing_asm_and_cleans_temp_on_analysis_or_generation_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    vm_content: str,
+) -> None:
+    vm_file = tmp_path / "Preserve.vm"
+    vm_file.write_text(vm_content, encoding="utf-8")
+    asm_file = tmp_path / "Preserve.asm"
+    previous_content = "// versao valida anterior\n@0\n"
+    asm_file.write_text(previous_content, encoding="utf-8")
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.err != ""
+    assert asm_file.read_text(encoding="utf-8") == previous_content
+    assert {entry.name for entry in tmp_path.iterdir()} == {
+        "Preserve.vm",
+        "Preserve.asm",
+    }
+
+
+def test_cli_preserves_existing_asm_and_cleans_temp_on_close_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vm_file = tmp_path / "CloseFail.vm"
+    vm_file.write_text("push constant 42\n", encoding="utf-8")
+    asm_file = tmp_path / "CloseFail.asm"
+    previous_content = "// versao valida anterior\n@1\n"
+    asm_file.write_text(previous_content, encoding="utf-8")
+
+    original_close = CodeWriter.close
+
+    def failing_close(self: CodeWriter) -> None:
+        original_close(self)
+        raise OSError("falha simulada no close")
+
+    monkeypatch.setattr(CodeWriter, "close", failing_close)
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "falha simulada no close" in captured.err
+    assert asm_file.read_text(encoding="utf-8") == previous_content
+    assert {entry.name for entry in tmp_path.iterdir()} == {
+        "CloseFail.vm",
+        "CloseFail.asm",
+    }
+
+
+def test_cli_preserves_existing_asm_and_cleans_temp_on_replace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vm_file = tmp_path / "ReplaceFail.vm"
+    vm_file.write_text("push constant 42\n", encoding="utf-8")
+    asm_file = tmp_path / "ReplaceFail.asm"
+    previous_content = "// versao valida anterior\n@2\n"
+    asm_file.write_text(previous_content, encoding="utf-8")
+
+    def failing_replace(src: Path | str, dst: Path | str) -> None:
+        raise OSError("falha simulada no replace")
+
+    monkeypatch.setattr("main.cli.os.replace", failing_replace)
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "falha simulada no replace" in captured.err
+    assert asm_file.read_text(encoding="utf-8") == previous_content
+    assert {entry.name for entry in tmp_path.iterdir()} == {
+        "ReplaceFail.vm",
+        "ReplaceFail.asm",
+    }
+
+
+def test_cli_replaces_existing_asm_and_leaves_no_temp_on_success(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vm_file = tmp_path / "ReplaceSuccess.vm"
+    vm_file.write_text("push constant 42\n", encoding="utf-8")
+    asm_file = tmp_path / "ReplaceSuccess.asm"
+    asm_file.write_text("// versao antiga\n", encoding="utf-8")
+
+    exit_code = main([str(vm_file)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    new_content = asm_file.read_text(encoding="utf-8")
+    assert "// push constant 42" in new_content
+    assert "// versao antiga" not in new_content
+    assert {entry.name for entry in tmp_path.iterdir()} == {
+        "ReplaceSuccess.vm",
+        "ReplaceSuccess.asm",
+    }
 
 
 def test_cli_rejects_function_and_static_symbol_collision(

@@ -7,6 +7,7 @@ import stat
 
 import pytest
 
+from codewriter import CodeWriter
 from main import CLIError, main, resolve_io, translate
 
 
@@ -358,6 +359,142 @@ def test_directory_error_in_second_file_removes_partial_asm(
     assert exit_code == 1
     assert "B_Broken.vm:2:" in captured.err
     assert not (proj_dir / "PartialFail.asm").exists()
+
+
+@pytest.mark.parametrize(
+    "second_file_content",
+    [
+        "function B.fail 0\ncall Bad$Name 1\n",
+        "function B.fail 0\npush constant 1\npop constant 0\nreturn\n",
+    ],
+)
+def test_directory_preserves_existing_asm_and_cleans_temp_on_second_file_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    second_file_content: str,
+) -> None:
+    proj_dir = tmp_path / "DirPreserve"
+    proj_dir.mkdir()
+    (proj_dir / "A_Valid.vm").write_text(
+        "function A.ok 0\npush constant 1\nreturn\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "B_Broken.vm").write_text(second_file_content, encoding="utf-8")
+    (proj_dir / "Sys.vm").write_text(
+        "function Sys.init 0\nreturn\n",
+        encoding="utf-8",
+    )
+    asm_file = proj_dir / "DirPreserve.asm"
+    previous_content = "// versao valida anterior do diretorio\n@256\n"
+    asm_file.write_text(previous_content, encoding="utf-8")
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.err != ""
+    assert asm_file.read_text(encoding="utf-8") == previous_content
+    assert {entry.name for entry in proj_dir.iterdir()} == {
+        "A_Valid.vm",
+        "B_Broken.vm",
+        "Sys.vm",
+        "DirPreserve.asm",
+    }
+
+
+def test_directory_preserves_existing_asm_and_cleans_temp_on_close_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "DirCloseFail"
+    proj_dir.mkdir()
+    (proj_dir / "Sys.vm").write_text(
+        "function Sys.init 0\nlabel HALT\ngoto HALT\n",
+        encoding="utf-8",
+    )
+    asm_file = proj_dir / "DirCloseFail.asm"
+    previous_content = "// versao valida anterior\n@10\n"
+    asm_file.write_text(previous_content, encoding="utf-8")
+
+    original_close = CodeWriter.close
+
+    def failing_close(self: CodeWriter) -> None:
+        original_close(self)
+        raise OSError("falha simulada no close do diretorio")
+
+    monkeypatch.setattr(CodeWriter, "close", failing_close)
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "falha simulada no close do diretorio" in captured.err
+    assert asm_file.read_text(encoding="utf-8") == previous_content
+    assert {entry.name for entry in proj_dir.iterdir()} == {
+        "Sys.vm",
+        "DirCloseFail.asm",
+    }
+
+
+def test_directory_preserves_existing_asm_and_cleans_temp_on_replace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "DirReplaceFail"
+    proj_dir.mkdir()
+    (proj_dir / "Sys.vm").write_text(
+        "function Sys.init 0\nlabel HALT\ngoto HALT\n",
+        encoding="utf-8",
+    )
+    asm_file = proj_dir / "DirReplaceFail.asm"
+    previous_content = "// versao valida anterior\n@20\n"
+    asm_file.write_text(previous_content, encoding="utf-8")
+
+    def failing_replace(src: Path | str, dst: Path | str) -> None:
+        raise OSError("falha simulada no replace do diretorio")
+
+    monkeypatch.setattr("main.cli.os.replace", failing_replace)
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "falha simulada no replace do diretorio" in captured.err
+    assert asm_file.read_text(encoding="utf-8") == previous_content
+    assert {entry.name for entry in proj_dir.iterdir()} == {
+        "Sys.vm",
+        "DirReplaceFail.asm",
+    }
+
+
+def test_directory_replaces_existing_asm_and_leaves_no_temp_on_success(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proj_dir = tmp_path / "DirReplaceSuccess"
+    proj_dir.mkdir()
+    (proj_dir / "Sys.vm").write_text(
+        "function Sys.init 0\nlabel HALT\ngoto HALT\n",
+        encoding="utf-8",
+    )
+    asm_file = proj_dir / "DirReplaceSuccess.asm"
+    asm_file.write_text("// versao antiga do diretorio\n", encoding="utf-8")
+
+    exit_code = main([str(proj_dir)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    new_content = asm_file.read_text(encoding="utf-8")
+    assert "// bootstrap" in new_content
+    assert "(Sys.init$HALT)" in new_content
+    assert "// versao antiga do diretorio" not in new_content
+    assert {entry.name for entry in proj_dir.iterdir()} == {
+        "Sys.vm",
+        "DirReplaceSuccess.asm",
+    }
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="Root ignora restrições de chmod.")

@@ -1,8 +1,10 @@
 """Ponto de entrada CLI e orquestração da tradução VM -> Assembly Hack."""
 
 from collections.abc import Sequence
+import os
 from pathlib import Path
 import sys
+import tempfile
 
 from codewriter import CodeWriter, CodeWriterError
 from parser import CommandType, Parser, ParserError
@@ -231,21 +233,39 @@ def translate(input_arg: str) -> Path:
         vm_files,
         include_bootstrap=should_bootstrap,
     )
+
+    fd, raw_temp_path = tempfile.mkstemp(
+        dir=output_path.parent,
+        prefix=f".{output_path.name}.",
+        suffix=".tmp",
+    )
+    temp_path = Path(raw_temp_path)
     writer: CodeWriter | None = None
+    close_attempted = False
+    replaced = False
 
     try:
-        writer = CodeWriter(output_path, reserved_symbols=reserved_symbols)
+        os.close(fd)
+        writer = CodeWriter(temp_path, reserved_symbols=reserved_symbols)
         if should_bootstrap:
             writer.writeInit()
         for vm_file in vm_files:
             translate_file(vm_file, writer)
-    except Exception:
-        if writer is not None:
-            writer.close()
-            output_path.unlink(missing_ok=True)
-        raise
-    else:
+        close_attempted = True
         writer.close()
+        os.replace(temp_path, output_path)
+        replaced = True
+    finally:
+        if writer is not None and not close_attempted:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if not replaced:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     return output_path
 
