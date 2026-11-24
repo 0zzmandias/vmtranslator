@@ -1,7 +1,10 @@
 """Testes de integração e linha de comando (CLI) da Parte 1."""
 
+import errno
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 
@@ -560,3 +563,154 @@ def test_cli_preserves_constant_15bit_limit(
         assert exit_code == 1
         assert "15 bits" in captured.err
         assert not asm_file.exists()
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o600, 0o1640])
+def test_cli_preserves_existing_asm_permission_bits(
+    tmp_path: Path,
+    mode: int,
+) -> None:
+    vm_file = tmp_path / "Permissions.vm"
+    vm_file.write_text("push constant 42\n", encoding="utf-8")
+    asm_file = vm_file.with_suffix(".asm")
+    asm_file.write_text("// versao anterior\n", encoding="utf-8")
+    asm_file.chmod(mode)
+    assert stat.S_IMODE(asm_file.stat().st_mode) == mode
+
+    previous_umask = os.umask(0o077)
+    try:
+        assert translate(str(vm_file)) == asm_file
+        assert os.umask(0o077) == 0o077
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(asm_file.stat().st_mode) == mode & 0o777
+    assert "// push constant 42" in asm_file.read_text(encoding="utf-8")
+    assert {entry.name for entry in tmp_path.iterdir()} == {vm_file.name, asm_file.name}
+
+
+@pytest.mark.parametrize(
+    ("mask", "expected_mode"),
+    [(0o022, 0o644), (0o077, 0o600), (0o777, 0o000)],
+)
+def test_cli_new_asm_respects_umask_and_restores_it(
+    tmp_path: Path,
+    mask: int,
+    expected_mode: int,
+) -> None:
+    vm_file = tmp_path / "NewPermissions.vm"
+    vm_file.write_text("push constant 42\n", encoding="utf-8")
+    asm_file = vm_file.with_suffix(".asm")
+
+    previous_umask = os.umask(mask)
+    try:
+        assert translate(str(vm_file)) == asm_file
+        assert os.umask(mask) == mask
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(asm_file.stat().st_mode) == expected_mode
+    # O modo 0000 impede a leitura por um usuário comum.
+    if expected_mode == 0:
+        asm_file.chmod(0o600)
+    assert "// push constant 42" in asm_file.read_text(encoding="utf-8")
+    assert {entry.name for entry in tmp_path.iterdir()} == {vm_file.name, asm_file.name}
+
+
+def test_cli_preserves_existing_asm_on_output_stat_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vm_file = tmp_path / "StatFail.vm"
+    vm_file.write_text("push constant 42\n", encoding="utf-8")
+    asm_file = vm_file.with_suffix(".asm")
+    previous_content = b"// assembly anterior\n@256\n"
+    asm_file.write_bytes(previous_content)
+    asm_file.chmod(0o640)
+    original_stat = Path.stat
+
+    def failing_stat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == asm_file:
+            raise PermissionError("falha simulada no stat da saída")
+        return original_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "stat", failing_stat)
+        assert main([str(vm_file)]) == 1
+
+    assert "falha simulada no stat" in capsys.readouterr().err
+    assert asm_file.read_bytes() == previous_content
+    assert stat.S_IMODE(asm_file.stat().st_mode) == 0o640
+    assert {entry.name for entry in tmp_path.iterdir()} == {vm_file.name, asm_file.name}
+
+
+@pytest.mark.parametrize("existing_output", [False, True])
+def test_cli_cleans_temp_and_preserves_output_on_chmod_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    existing_output: bool,
+) -> None:
+    vm_file = tmp_path / "ChmodFail.vm"
+    vm_file.write_text("push constant 42\n", encoding="utf-8")
+    asm_file = vm_file.with_suffix(".asm")
+    previous_content = b"// assembly anterior\n@256\n"
+    if existing_output:
+        asm_file.write_bytes(previous_content)
+        asm_file.chmod(0o640)
+
+    def failing_chmod(path: Path, mode: int) -> None:
+        assert path.parent == tmp_path
+        assert path.suffix == ".tmp"
+        assert "// push constant 42" in path.read_text(encoding="utf-8")
+        raise OSError("falha simulada no chmod do temporário")
+
+    previous_umask = os.umask(0o777)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "chmod", failing_chmod)
+            assert main([str(vm_file)]) == 1
+        assert os.umask(0o777) == 0o777
+    finally:
+        os.umask(previous_umask)
+
+    assert "falha simulada no chmod" in capsys.readouterr().err
+    if existing_output:
+        assert asm_file.read_bytes() == previous_content
+        assert stat.S_IMODE(asm_file.stat().st_mode) == 0o640
+    else:
+        assert not asm_file.exists()
+    expected_files = {vm_file.name, asm_file.name} if existing_output else {vm_file.name}
+    assert {entry.name for entry in tmp_path.iterdir()} == expected_files
+
+
+def test_cli_closes_descriptor_and_cleans_temp_on_fchmod_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vm_file = tmp_path / "FchmodFail.vm"
+    vm_file.write_text("push constant 42\n", encoding="utf-8")
+    asm_file = vm_file.with_suffix(".asm")
+    previous_content = b"// assembly anterior\n@256\n"
+    asm_file.write_bytes(previous_content)
+    asm_file.chmod(0o640)
+    descriptors: list[int] = []
+
+    def failing_fchmod(fd: int, mode: int) -> None:
+        descriptors.append(fd)
+        raise OSError("falha simulada no fchmod do temporário")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fchmod", failing_fchmod)
+        assert main([str(vm_file)]) == 1
+        assert len(descriptors) == 1
+        with pytest.raises(OSError) as exc_info:
+            os.fstat(descriptors[0])
+        assert exc_info.value.errno == errno.EBADF
+
+    assert "falha simulada no fchmod" in capsys.readouterr().err
+    assert asm_file.read_bytes() == previous_content
+    assert stat.S_IMODE(asm_file.stat().st_mode) == 0o640
+    assert {entry.name for entry in tmp_path.iterdir()} == {vm_file.name, asm_file.name}

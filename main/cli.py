@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 
@@ -243,6 +244,18 @@ def translate_file(vm_path: Path, code_writer: CodeWriter) -> None:
             raise CLIError(f"Tipo de comando não suportado: '{command_type.value}'.")
 
 
+def _resolve_output_mode(output_path: Path) -> int:
+    """Preserva os bits de permissão do destino ou respeita a umask na criação."""
+    try:
+        return stat.S_IMODE(output_path.stat().st_mode) & 0o777
+    except FileNotFoundError:
+        previous_umask = os.umask(0o777)
+        try:
+            return 0o666 & ~previous_umask
+        finally:
+            os.umask(previous_umask)
+
+
 def translate(input_arg: str) -> Path:
     """Executa o fluxo completo de tradução (arquivo ou diretório) e retorna o .asm gerado."""
     vm_files, output_path, should_bootstrap = resolve_io(input_arg)
@@ -251,6 +264,7 @@ def translate(input_arg: str) -> Path:
         include_bootstrap=should_bootstrap,
     )
 
+    output_mode = _resolve_output_mode(output_path)
     fd, raw_temp_path = tempfile.mkstemp(
         dir=output_path.parent,
         prefix=f".{output_path.name}.",
@@ -262,7 +276,11 @@ def translate(input_arg: str) -> Path:
     replaced = False
 
     try:
-        os.close(fd)
+        try:
+            # Uma umask restritiva pode impedir a reabertura do temporário.
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
         writer = CodeWriter(temp_path, reserved_symbols=reserved_symbols)
         if should_bootstrap:
             writer.writeInit()
@@ -270,6 +288,7 @@ def translate(input_arg: str) -> Path:
             translate_file(vm_file, writer)
         close_attempted = True
         writer.close()
+        temp_path.chmod(output_mode)
         os.replace(temp_path, output_path)
         replaced = True
     finally:
