@@ -192,6 +192,10 @@ def collect_program_symbols(
                         location=location,
                     )
 
+    for symbol, (category, location) in symbol_categories.items():
+        if category == "label" and symbol not in symbol_definitions:
+            raise CLIError(f"{location}: rótulo '{symbol}' não definido.")
+
     return set(symbol_categories.keys())
 
 

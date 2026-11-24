@@ -522,3 +522,113 @@ def test_translate_directory_returns_generated_asm_path(tmp_path: Path) -> None:
 
     assert output_path == proj_dir / "DirReturn.asm"
     assert output_path.is_file()
+
+
+@pytest.mark.parametrize("scope", ["global", "function"])
+def test_label_validation_accepts_forward_backward_repeated_and_unused_labels(
+    tmp_path: Path,
+    scope: str,
+) -> None:
+    vm_file = tmp_path / "Flow.vm"
+    prefix = "function Flow.run 0\n" if scope == "function" else ""
+    vm_file.write_text(
+        prefix
+        + "goto LOOP\n"
+        "push constant 1\n"
+        "if-goto LOOP\n"
+        "label LOOP\n"
+        "goto LOOP\n"
+        "label UNUSED\n",
+        encoding="utf-8",
+    )
+
+    output_path = translate(str(vm_file))
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    label_prefix = "Flow.run" if scope == "function" else "GLOBAL$Flow"
+    assert lines.count(f"@{label_prefix}$LOOP") == 3
+    assert lines.count(f"({label_prefix}$LOOP)") == 1
+    assert f"({label_prefix}$UNUSED)" in lines
+
+
+@pytest.mark.parametrize("command", ["goto", "if-goto"])
+@pytest.mark.parametrize("existing_output", [False, True])
+def test_label_validation_rejects_missing_targets_and_preserves_output(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    existing_output: bool,
+) -> None:
+    vm_file = tmp_path / "Missing.vm"
+    vm_file.write_text(
+        f"// comentario\n\npush constant 1\n{command} ABSENT\n",
+        encoding="utf-8",
+    )
+    asm_file = vm_file.with_suffix(".asm")
+    previous_content = b"// assembly anterior\n@256\n"
+    if existing_output:
+        asm_file.write_bytes(previous_content)
+
+    assert main([str(vm_file)]) == 1
+    captured = capsys.readouterr()
+    assert f"{vm_file}:4:" in captured.err
+    assert "GLOBAL$Missing$ABSENT" in captured.err
+    assert "não definido" in captured.err
+    if existing_output:
+        assert asm_file.read_bytes() == previous_content
+    else:
+        assert not asm_file.exists()
+    expected_files = {vm_file.name, asm_file.name} if existing_output else {vm_file.name}
+    assert {entry.name for entry in tmp_path.iterdir()} == expected_files
+
+
+@pytest.mark.parametrize("command", ["goto", "if-goto"])
+def test_label_validation_rejects_target_in_another_function(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    vm_file = tmp_path / "Functions.vm"
+    vm_file.write_text(
+        "function Functions.first 0\n"
+        "push constant 1\n"
+        f"{command} LOOP\n"
+        "function Functions.second 0\n"
+        "label LOOP\n"
+        "goto LOOP\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CLIError) as exc_info:
+        translate(str(vm_file))
+
+    message = str(exc_info.value)
+    assert f"{vm_file}:3:" in message
+    assert "Functions.first$LOOP" in message
+    assert "não definido" in message
+    assert not vm_file.with_suffix(".asm").exists()
+
+
+@pytest.mark.parametrize("command", ["goto", "if-goto"])
+def test_label_validation_rejects_target_in_another_file(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    proj_dir = tmp_path / "CrossFileFlow"
+    proj_dir.mkdir()
+    vm_file = proj_dir / "A.vm"
+    vm_file.write_text(
+        f"push constant 1\n{command} LOOP\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "B.vm").write_text(
+        "label LOOP\ngoto LOOP\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CLIError) as exc_info:
+        translate(str(proj_dir))
+
+    message = str(exc_info.value)
+    assert f"{vm_file}:2:" in message
+    assert "GLOBAL$A$LOOP" in message
+    assert "não definido" in message
+    assert {entry.name for entry in proj_dir.iterdir()} == {"A.vm", "B.vm"}
