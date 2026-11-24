@@ -356,15 +356,21 @@ def test_cli_rejects_duplicate_function_and_label_definitions(
     assert not (tmp_path / "DuplicateDef.asm").exists()
 
 
-@pytest.mark.parametrize("predefined", ["SP", "LCL", "ARG", "R0", "R15", "SCREEN", "KBD"])
-def test_cli_rejects_predefined_hack_symbol_definition(
+@pytest.mark.parametrize("command", ["function", "call"])
+@pytest.mark.parametrize(
+    "predefined",
+    ["SP", "LCL", "ARG", "THIS", "THAT", "SCREEN", "KBD"]
+    + [f"R{i}" for i in range(16)],
+)
+def test_cli_rejects_predefined_hack_function_symbol(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     predefined: str,
+    command: str,
 ) -> None:
     vm_file = tmp_path / "PredefinedCollision.vm"
     vm_file.write_text(
-        f"function {predefined} 0\n"
+        f"{command} {predefined} 0\n"
         "return\n",
         encoding="utf-8",
     )
@@ -373,6 +379,7 @@ def test_cli_rejects_predefined_hack_symbol_definition(
     captured = capsys.readouterr()
 
     assert exit_code == 1
+    assert f"{vm_file}:1:" in captured.err
     assert "predefinido" in captured.err
     assert predefined in captured.err
     assert not (tmp_path / "PredefinedCollision.asm").exists()
@@ -457,3 +464,24 @@ def test_translate_returns_generated_asm_path(tmp_path: Path) -> None:
 
     assert output_path == tmp_path / "ReturnPath.asm"
     assert output_path.is_file()
+
+
+@pytest.mark.parametrize("filename", ["Module.vm", "Sys.vm"])
+def test_single_file_allows_unresolved_external_function(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    vm_file = tmp_path / filename
+    vm_file.write_text(
+        "function Module.run 0\n"
+        "push constant 2\n"
+        "push constant 3\n"
+        "call Math.multiply 2\n"
+        "return\n",
+        encoding="utf-8",
+    )
+
+    lines = translate(str(vm_file)).read_text(encoding="utf-8").splitlines()
+    assert "@Math.multiply" in lines
+    assert "(Math.multiply)" not in lines
+    assert "// bootstrap" not in lines

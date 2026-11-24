@@ -632,3 +632,107 @@ def test_label_validation_rejects_target_in_another_file(
     assert "GLOBAL$A$LOOP" in message
     assert "não definido" in message
     assert {entry.name for entry in proj_dir.iterdir()} == {"A.vm", "B.vm"}
+
+
+def test_directory_without_bootstrap_uses_same_external_call_policy_as_file(
+    tmp_path: Path,
+) -> None:
+    proj_dir = tmp_path / "Modules"
+    proj_dir.mkdir()
+    vm_file = proj_dir / "A.vm"
+    vm_file.write_text(
+        "function A.run 0\ncall External.f 0\nreturn\n",
+        encoding="utf-8",
+    )
+
+    single = translate(str(vm_file)).read_bytes()
+    directory = translate(str(proj_dir)).read_bytes()
+    assert single == directory
+    assert b"@External.f\n" in directory
+    assert b"// bootstrap" not in directory
+
+    (proj_dir / "B.vm").write_text(
+        "function B.run 0\ncall A.run 0\ncall External.g 0\nreturn\n",
+        encoding="utf-8",
+    )
+    lines = translate(str(proj_dir)).read_text(encoding="utf-8").splitlines()
+    assert "@External.f" in lines
+    assert "@External.g" in lines
+    assert "@A.run" in lines
+    assert "(A.run)" in lines
+    assert "// bootstrap" not in lines
+
+
+@pytest.mark.parametrize("existing_output", [False, True])
+@pytest.mark.parametrize("missing_init", [False, True])
+def test_bootstrap_requires_all_function_definitions_before_emission(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    existing_output: bool,
+    missing_init: bool,
+) -> None:
+    proj_dir = tmp_path / "Incomplete"
+    proj_dir.mkdir()
+    vm_file = proj_dir / "Sys.vm"
+    vm_file.write_text(
+        "function Sys.other 0\nlabel HALT\ngoto HALT\n"
+        if missing_init
+        else "function Sys.init 0\ncall Missing.f 0\nlabel HALT\ngoto HALT\n",
+        encoding="utf-8",
+    )
+    asm_file = proj_dir / "Incomplete.asm"
+    previous_content = b"// assembly anterior\n@256\n"
+    if existing_output:
+        asm_file.write_bytes(previous_content)
+
+    def unexpected_mkstemp(*args: object, **kwargs: object) -> None:
+        pytest.fail("A validação deveria ocorrer antes de criar o temporário.")
+
+    monkeypatch.setattr("main.cli.tempfile.mkstemp", unexpected_mkstemp)
+    assert main([str(proj_dir)]) == 1
+    message = capsys.readouterr().err
+    if missing_init:
+        assert "bootstrap" in message
+        assert "Sys.init" in message
+    else:
+        assert f"{vm_file}:2:" in message
+        assert "Missing.f" in message
+    assert "não definida" in message
+    if existing_output:
+        assert asm_file.read_bytes() == previous_content
+    else:
+        assert not asm_file.exists()
+    expected_files = {vm_file.name, asm_file.name} if existing_output else {vm_file.name}
+    assert {entry.name for entry in proj_dir.iterdir()} == expected_files
+
+
+def test_bootstrap_accepts_forward_recursive_repeated_and_cross_file_calls(
+    tmp_path: Path,
+) -> None:
+    proj_dir = tmp_path / "Complete"
+    proj_dir.mkdir()
+    (proj_dir / "A.vm").write_text(
+        "function A.run 0\n"
+        "call Z.step 0\n"
+        "call Z.step 0\n"
+        "return\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "Sys.vm").write_text(
+        "function Sys.init 0\ncall A.run 0\nlabel HALT\ngoto HALT\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "Z.vm").write_text(
+        "function Z.step 0\ncall Z.step 0\nreturn\n",
+        encoding="utf-8",
+    )
+
+    lines = translate(str(proj_dir)).read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "// bootstrap"
+    assert lines.count("// bootstrap") == 1
+    assert lines.count("@Sys.init") == 1
+    assert lines.count("@A.run") == 1
+    assert lines.count("@Z.step") == 3
+    assert "(Z.step)" in lines
+    assert lines.index("(A.run)") < lines.index("(Z.step)")

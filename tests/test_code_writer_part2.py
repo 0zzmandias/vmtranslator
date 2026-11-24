@@ -406,3 +406,35 @@ def test_part2_methods_after_close_raise_error(tmp_path: Path) -> None:
         cw.writeCall("Main.f", 0)
     with pytest.raises(CodeWriterError, match="fechamento"):
         cw.writeReturn()
+
+
+@pytest.mark.parametrize("command", ["function", "call"])
+@pytest.mark.parametrize(
+    "predefined",
+    ["SP", "LCL", "ARG", "THIS", "THAT", "SCREEN", "KBD"]
+    + [f"R{i}" for i in range(16)],
+)
+def test_predefined_function_symbol_is_rejected_without_changing_writer_state(
+    tmp_path: Path,
+    command: str,
+    predefined: str,
+) -> None:
+    asm_file = tmp_path / "Predefined.asm"
+    reference_file = tmp_path / "Reference.asm"
+    with CodeWriter(reference_file) as cw:
+        cw.writeFunction("Main.run", 0)
+        cw.writeLabel("AFTER")
+        cw.writeCall("External.f", 0)
+
+    with CodeWriter(asm_file) as cw:
+        cw.writeFunction("Main.run", 0)
+        with pytest.raises(CodeWriterError, match="predefinido") as exc_info:
+            if command == "function":
+                cw.writeFunction(predefined, 0)
+            else:
+                cw.writeCall(predefined, 0)
+        assert predefined in str(exc_info.value)
+        cw.writeLabel("AFTER")
+        cw.writeCall("External.f", 0)
+
+    assert asm_file.read_bytes() == reference_file.read_bytes()

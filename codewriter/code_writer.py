@@ -171,6 +171,14 @@ class CodeWriter:
                 f"Identificador inválido para {context}: {name!r}."
             )
 
+    def _validate_function_name(self, name: str, context: str) -> None:
+        self._validate_identifier(name, context)
+        if name in _PREDEFINED_HACK_SYMBOLS:
+            raise CodeWriterError(
+                f"Identificador '{name}' para {context} conflita com "
+                "símbolo predefinido da arquitetura Hack."
+            )
+
     def _current_scope(self) -> str:
         return self.format_scope(
             file_name=self._file_name,
@@ -595,7 +603,7 @@ class CodeWriter:
     def writeFunction(self, function_name: str, num_vars: int) -> None:
         """Traduz a declaração de função, atualizando o escopo e zerando num_vars locais."""
         self._ensure_open()
-        self._validate_identifier(function_name, "function")
+        self._validate_function_name(function_name, "function")
         self._validate_non_negative_int(num_vars, "function")
         self._validate_15bit_index(num_vars, "function")
 
@@ -620,7 +628,7 @@ class CodeWriter:
     def writeCall(self, function_name: str, num_args: int) -> None:
         """Traduz a chamada de função salvando o frame do chamador e saltando para function_name."""
         self._ensure_open()
-        self._validate_identifier(function_name, "call")
+        self._validate_function_name(function_name, "call")
         self._validate_non_negative_int(num_args, "call")
         arg_offset = _CALL_FRAME_SIZE + num_args
         self._validate_15bit_index(arg_offset, "call")

@@ -81,6 +81,8 @@ vmtranslator caminho/Diretorio
 ```
 Localiza todos os arquivos `.vm` no nível do diretório em ordem alfabética determinística e gera um único `caminho/Diretorio/Diretorio.asm`. O código de *bootstrap* (`SP = 256` seguido de `call Sys.init 0`) é emitido **apenas** quando o diretório contém `Sys.vm`.
 
+**Resolução de chamadas:** com *bootstrap*, todas as funções chamadas, incluindo `Sys.init`, devem estar declaradas nos arquivos VM selecionados. Sem *bootstrap*, tanto arquivos individuais quanto diretórios podem conter referências a funções externas não resolvidas; o Assembly resultante não é executável de forma independente enquanto essas dependências não forem resolvidas. O tradutor não realiza vinculação de módulos Assembly. Chamadas para símbolos predefinidos do Hack são rejeitadas em qualquer modalidade.
+
 ### 3. Execução da suíte de testes automatizados
 
 ```bash

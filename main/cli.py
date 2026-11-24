@@ -93,9 +93,13 @@ def collect_program_symbols(
     ) -> None:
         category_label = _SYMBOL_CATEGORY_LABELS[category]
 
-        if is_definition and symbol in CodeWriter.PREDEFINED_HACK_SYMBOLS:
+        if (
+            (is_definition or category == "function")
+            and symbol in CodeWriter.PREDEFINED_HACK_SYMBOLS
+        ):
+            usage = "definição de" if is_definition else "referência a"
             raise CLIError(
-                f"{location}: definição de {category_label} '{symbol}' conflita com "
+                f"{location}: {usage} {category_label} '{symbol}' conflita com "
                 "símbolo predefinido da arquitetura Hack."
             )
 
@@ -195,6 +199,12 @@ def collect_program_symbols(
     for symbol, (category, location) in symbol_categories.items():
         if category == "label" and symbol not in symbol_definitions:
             raise CLIError(f"{location}: rótulo '{symbol}' não definido.")
+        if (
+            include_bootstrap
+            and category == "function"
+            and symbol not in symbol_definitions
+        ):
+            raise CLIError(f"{location}: função '{symbol}' não definida.")
 
     return set(symbol_categories.keys())
 
