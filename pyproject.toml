@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "vmtranslator"
 version = "0.1.0"
 description = "Tradutor completo da linguagem VM para Assembly Hack (Nand2Tetris Projects 07 e 08)"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 [project.scripts]
 vmtranslator = "main.cli:main"
