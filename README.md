@@ -10,7 +10,7 @@ Tradutor completo da linguagem intermediária da Máquina Virtual (VM) para Asse
 
 ## Linguagem e Versão
 
-- **Linguagem:** Python 3.11+ (desenvolvido em **Python 3.13.9** e validado inicialmente em **Python 3.11.18** e **Python 3.13.9**)
+- **Linguagem:** Python 3.11+ (desenvolvido em **Python 3.13.9** e validado em **Python 3.11.18** e **Python 3.13.9**)
 - **Gerenciamento de dependências e empacotamento:** `pyproject.toml` e `requirements.txt`
 - **Framework de testes:** `pytest`
 
@@ -20,7 +20,7 @@ Tradutor completo da linguagem intermediária da Máquina Virtual (VM) para Asse
 
 Para instalar, executar e validar o projeto são necessários:
 
-- **Python 3.11 ou superior** (desenvolvido em **Python 3.13.9** e validado inicialmente também em **Python 3.11.18**) com suporte a `venv` e `pip`;
+- **Python 3.11 ou superior** (desenvolvido em **Python 3.13.9** e validado também em **Python 3.11.18**) com suporte a `venv` e `pip`;
 - **`pytest` (>= 8.0.0)** — instalado automaticamente via `requirements.txt` para a suíte de testes unitários e de integração;
 - **Java (JDK/JRE — testado com OpenJDK 21)** e a suíte **Nand2Tetris** (`tools/CPUEmulator.sh` e arquivos de teste dos Projects 07 e 08) — necessários para executar a validação oficial dos scripts `.tst` no CPU Emulator.
 
@@ -44,6 +44,7 @@ vmtranslator/
 │   └── cli.py                      # Interface CLI, pré-varredura de símbolos e escrita atômica
 └── tests/
     ├── __init__.py
+    ├── hack_simulator.py           # Simulador Hack mínimo, exclusivo dos testes
     ├── test_parser.py              # Testes unitários do Parser (Parte 1)
     ├── test_code_writer.py         # Testes unitários do CodeWriter (Parte 1)
     ├── test_cli.py                 # Testes de integração e CLI (Parte 1)
@@ -108,23 +109,23 @@ sh /caminho/para/nand2tetris/tools/CPUEmulator.sh caminho/Arquivo.tst
   - `temp` (`RAM[5 + i]`, índices `0..7`);
   - `pointer` (`0` para `THIS` e `1` para `THAT`);
   - `static` (`@NomeArquivo.i`, atualizado por arquivo via `setFileName()` com validação estrita por correspondência integral `.fullmatch()`).
-- **Rastreabilidade, escrita atômica e tratamento de erros (`main/`):** emissão do comando VM original como comentário antes de cada bloco Assembly gerado, ausência de inicialização de ponteiros de segmento em arquivos individuais, validação rigorosa de argumentos/entradas com mensagens em `stderr`, código de saída não-zero e escrita atômica via arquivo temporário no diretório de destino com `os.replace()`, preservando arquivos `.asm` válidos preexistentes em caso de falha.
+- **Rastreabilidade, escrita atômica e tratamento de erros (`main/`):** emissão do comando VM original como comentário antes de cada bloco Assembly gerado, ausência de inicialização de ponteiros de segmento em arquivos individuais, validação rigorosa de argumentos/entradas com mensagens em `stderr`, código de saída não-zero e escrita atômica via arquivo temporário no diretório de destino com `os.replace()`, preservando arquivos `.asm` válidos preexistentes em caso de falha. A escrita preserva os nove bits convencionais de permissão de arquivos existentes e respeita a `umask` para novos arquivos, sem preservar proprietário, ACLs ou atributos estendidos.
 
 ### Parte 2 — Controle de Fluxo, Funções, Bootstrap e Diretórios (Project 08)
 
-- **Extensão do `Parser` (`parser/`):** suporte aditivo aos 6 novos comandos (`C_LABEL`, `C_GOTO`, `C_IF`, `C_FUNCTION`, `C_CALL` e `C_RETURN`), com validação de aridade, identificadores VM e índices inteiros não negativos.
-- **Controle de fluxo (`codewriter/`):** tradução de `label`, `goto` e `if-goto` (`D;JNE`) com qualificação em três níveis de escopo (`função$rótulo` dentro de função, `GLOBAL$<Arquivo>$<rótulo>` fora de função após `setFileName()` e `GLOBAL` antes de `setFileName()`), evitando colisões entre rótulos globais de arquivos distintos.
+- **Extensão do `Parser` (`parser/`):** suporte aditivo aos 6 novos comandos (`C_LABEL`, `C_GOTO`, `C_IF`, `C_FUNCTION`, `C_CALL` e `C_RETURN`), com validação de aridade, identificadores VM e índices inteiros não negativos. Falhas de conversão de argumentos numéricos excessivamente grandes são relatadas com arquivo e linha.
+- **Controle de fluxo (`codewriter/`):** tradução de `label`, `goto` e `if-goto` (`D;JNE`) com qualificação em três níveis de escopo (`função$rótulo` dentro de função, `GLOBAL$<Arquivo>$<rótulo>` fora de função após `setFileName()` e `GLOBAL` antes de `setFileName()`), evitando colisões entre rótulos globais de arquivos distintos. A pré-varredura rejeita destinos de salto não definidos no escopo correspondente.
 - **Protocolo de funções (`codewriter/`):**
   - `writeFunction(nome, nVars)`: atualiza a função corrente, declara `(f)` e aloca/zera `nVars` variáveis locais;
   - `writeCall(nome, nArgs)`: gera rótulo de retorno exclusivo (`chamador$ret.i`) livre de colisão via contador monotônico global e tabela de símbolos reservados, salva `retAddr`, `LCL`, `ARG`, `THIS` e `THAT`, reposiciona `ARG = SP - 5 - nArgs` e `LCL = SP`, salta para `f` e declara `(retAddr)`;
-  - `writeReturn()`: salva `endFrame = LCL` (`R13`) e lê `retAddr = *(endFrame - 5)` (`R14`) **antes** de gravar o valor de retorno em `*ARG` (protegendo funções com 0 argumentos), ajusta `SP = ARG + 1`, restaura `THAT`, `THIS`, `ARG` e `LCL` e salta para `retAddr`.
+  - `writeReturn()`: salva `endFrame = LCL` (`R13`) e lê `retAddr = *(endFrame - 5)` (`R14`) **antes** de gravar o valor de retorno em `*ARG` (protegendo funções com 0 argumentos), ajusta `SP = ARG + 1`, restaura `THAT`, `THIS`, `ARG` e `LCL` e salta para `retAddr`. O comando `return` é rejeitado fora de função, tanto na CLI quanto no CodeWriter.
 - **Pré-varredura de símbolos, bootstrap e diretórios (`codewriter/` e `main/`):** implementação de `writeInit()` (`SP = 256` seguido de `call Sys.init 0`, resultando em `SP = 261`, `LCL = 261` e `ARG = 256`), pré-varredura completa de todos os `.vm` antes da emissão para rejeitar definições duplicadas, colisões entre categorias incompatíveis (como `function` e `static`) e conflitos com símbolos predefinidos do Hack, além da reserva atômica de rótulos internos, tradução de diretórios em ordem determinística e emissão condicional de *bootstrap* somente quando o diretório contém `Sys.vm`.
 
 ## Resultado dos Testes
 
 ### Testes Oficiais — CPU Emulator (11/11)
 
-Resultados registrados na versão `d80d9fa`, anteriores às correções complementares.
+Resultados da revalidação de 24/11/2026, realizada sobre o commit `9937645` com OpenJDK 21.0.13.1. Os 11 arquivos Assembly foram regenerados em cópias dos materiais oficiais; todos os scripts retornaram `Comparison ended successfully` e a presença ou ausência de bootstrap foi conferida em cada caso.
 
 | Parte | Teste | Entrada | Bootstrap | O que exercita | Resultado |
 | :---: | :--- | :--- | :---: | :--- | :---: |
@@ -142,17 +143,17 @@ Resultados registrados na versão `d80d9fa`, anteriores às correções compleme
 
 ### Testes Unitários e de Integração (`pytest`)
 
-Suíte atual executada e aprovada em **Python 3.13.9**, sem testes ignorados. A versão `d80d9fa` (274 testes) também foi validada em **Python 3.11.18**.
+Suíte de 431 testes executada e aprovada em **Python 3.11.18** e **Python 3.13.9**, com `pytest 9.2.0`, sem falhas nem testes ignorados, sobre o commit `9937645`. O simulador auxiliar em `tests/hack_simulator.py` verifica o comportamento do Assembly em cenários dirigidos e não substitui os testes oficiais no CPU Emulator.
 
 | Suíte | Escopo | Quantidade | Resultado |
 | :--- | :--- | :---: | :---: |
 | `tests/test_parser.py` | Comandos, formatação, valores-limite e `ParserError` (Parte 1) | 45 | Passou |
-| `tests/test_code_writer.py` | Aritmética, comparações sem *overflow* em 16 bits, reserva de símbolos, segmentos, validação de nomes e `CodeWriterError` (Parte 1) | 119 | Passou |
-| `tests/test_cli.py` | Tradução de arquivo único, pré-varredura de símbolos, escrita atômica e erros de entrada (Parte 1) | 92 | Passou |
+| `tests/test_code_writer.py` | Aritmética, comparações sem *overflow* em 16 bits, reserva de símbolos, segmentos, validação de nomes, `CodeWriterError` e testes de referência do simulador (Parte 1) | 130 | Passou |
+| `tests/test_cli.py` | Tradução de arquivo único, pré-varredura de símbolos, escrita atômica, permissões e erros de entrada (Parte 1) | 92 | Passou |
 | `tests/test_parser_part2.py` | Novos comandos de fluxo/funções, aridade, identificadores e `ParserError` (Parte 2) | 39 | Passou |
-| `tests/test_code_writer_part2.py` | Escopos globais e de função, `function`, `call`, `return`, `writeInit`, reserva de rótulos e erros (Parte 2) | 78 | Passou |
-| `tests/test_cli_part2.py` | Diretórios, isolamento de rótulos globais e `static`, colisões entre arquivos, escrita atômica e bootstrap condicional (Parte 2) | 41 | Passou |
-| **Total** | **414 testes automatizados (256 Parte 1 + 158 Parte 2)** | **414** | **414/414 Passou** |
+| `tests/test_code_writer_part2.py` | Escopos globais e de função, `function`, `call`, `return`, `writeInit`, reserva de rótulos, erros e execução comportamental do protocolo de funções (Parte 2) | 83 | Passou |
+| `tests/test_cli_part2.py` | Diretórios, isolamento de rótulos globais e `static`, colisões entre arquivos, escrita atômica, validações semânticas e bootstrap condicional, incluindo o frame na entrada de `Sys.init` (Parte 2) | 42 | Passou |
+| **Total** | **431 testes automatizados (267 Parte 1 + 164 Parte 2)** | **431** | **431/431 Passou** |
 
 ## Vídeo de Demonstração
 
