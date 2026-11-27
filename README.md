@@ -157,4 +157,4 @@ Suíte de 431 testes executada e aprovada em **Python 3.11.18** e **Python 3.13.
 
 ## Vídeo de Demonstração
 
-- *A ser adicionado — o link do vídeo será inserido nesta seção após a gravação.*
+- https://www.youtube.com/watch?v=HVG6UMEwHFo
